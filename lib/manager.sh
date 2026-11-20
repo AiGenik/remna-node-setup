@@ -27,11 +27,13 @@ prepare_security() {
 }
 
 detect_ssh_port() {
-    local connection port
+    local saved_port=${1:-} connection port
     connection=$(ssh_context)
     port=${connection##* }
-    if valid_port "$port"; then
+    if [[ -n ${ADMIN_IP:-} ]] && valid_port "$port"; then
         printf '%s\n' "$port"
+    elif valid_port "$saved_port"; then
+        printf '%s\n' "$saved_port"
     elif command -v sshd >/dev/null; then
         (sshd -T 2>/dev/null || :) | awk '$1 == "port" && !seen++ { print $2 }'
     fi
@@ -98,7 +100,7 @@ install_wizard() {
     raw=$(prompt 'Исходящие IP панели через пробел' "$old_panel") || return
     PANEL_IPS=$(normalize_ips "$raw") || return
     [[ -n $PANEL_IPS ]] || { fail 'Укажите хотя бы один IP панели.'; return 1; }
-    detected_port=$(detect_ssh_port) || return
+    detected_port=$(detect_ssh_port "$old_ssh") || return
     port=$(prompt 'Действующий SSH-порт VPS' "${detected_port:-${old_ssh:-22}}") || return
     valid_port "$port" || { fail 'Некорректный порт SSH.'; return 1; }
     if [[ -n $ADMIN_IP && -n $detected_port && $port != "$detected_port" ]]; then
