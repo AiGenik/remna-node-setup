@@ -21,6 +21,7 @@ jobs:
           done
           shellcheck -x remna-node-setup install.sh lib/*.sh scripts/*.sh tests/*.sh
           ./remna-node-setup --self-test
+          ./tests/ssh-settings.sh
           ./tests/release-smoke.sh
           ./scripts/build-release.sh dist "$GITHUB_REF_NAME"
       - name: Publish
