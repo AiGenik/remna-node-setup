@@ -29,18 +29,21 @@ source "$PROJECT_DIR/lib/traffic-guard.sh"
 source "$PROJECT_DIR/lib/transaction.sh"
 # shellcheck source=lib/manager.sh
 source "$PROJECT_DIR/lib/manager.sh"
+# shellcheck source=lib/standalone.sh
+source "$PROJECT_DIR/lib/standalone.sh"
 
 usage() {
     cat <<'HELP'
 Remna Node Setup
 
   remna-node-setup                     Меню
-  remna-node-setup install             Настроить ноду и выбранные компоненты
+  remna-node-setup install [node-only] Настроить ноду и выбранные компоненты
   remna-node-setup selfsteal [caddy|nginx] Настроить веб-сервер для self-steal
   remna-node-setup security            Применить настройки UFW и Fail2Ban
   remna-node-setup bbr                 Включить BBR и fq
   remna-node-setup status              Статус
   remna-node-setup doctor              Диагностика
+  remna-node-setup dns [домен]         Проверить A/AAAA и IP этого VPS
   remna-node-setup logs                Последние сообщения ноды
   remna-node-setup backup              Сохранить конфигурацию
   remna-node-setup restore ID          Восстановить снимок
@@ -58,10 +61,12 @@ self_test() {
     for name in node_apply node_verify node_restore_runtime selfsteal_apply selfsteal_verify \
         nginx_selfsteal_apply nginx_selfsteal_stop security_apply security_preflight bbr_apply traffic_guard_apply \
         traffic_guard_capture_runtime traffic_guard_restore_before_ufw traffic_guard_restore_after_ufw \
-        release_update release_rollback release_acquire_lock install_wizard restore_snapshot; do
+        release_update release_rollback release_acquire_lock install_wizard restore_snapshot \
+        load_host_settings standalone_selfsteal standalone_security standalone_bbr standalone_traffic_guard; do
         declare -F "$name" >/dev/null || { fail "Не загружен модуль $name."; return 1; }
     done
     [[ -r $PROJECT_DIR/lib/secret-input.py ]] || { fail 'Модуль ввода ключа отсутствует.'; return 1; }
+    [[ -r $PROJECT_DIR/lib/selfsteal-dns.py ]] || { fail 'Модуль проверки DNS отсутствует.'; return 1; }
     jq -e 'type == "object" and (.version | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")) and
            (.node_image | test("^remnawave/node:[^@]+@sha256:[a-f0-9]{64}$")) and
            (.traffic_guard_version | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")) and

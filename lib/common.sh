@@ -46,7 +46,7 @@ apt_install_missing() {
     done
     if (( ${#missing[@]} )); then
         apt-get -o APT::Update::Error-Mode=any update || return
-        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${missing[@]}"
+        DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y --no-install-recommends "${missing[@]}"
     fi
 }
 

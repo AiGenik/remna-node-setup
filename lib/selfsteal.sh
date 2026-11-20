@@ -11,41 +11,18 @@ _selfsteal_caddy_owned_config() {
 }
 
 _selfsteal_validate_domain() {
-    python3 - "$NODE_DOMAIN" <<'PY'
-import ipaddress
-import json
-import re
-import socket
-import subprocess
-import sys
-
-domain = sys.argv[1].rstrip(".")
-name_pattern = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
-if len(domain) > 253 or "." not in domain or not all(
-    re.fullmatch(name_pattern, label) for label in domain.split(".")
-):
-    sys.exit("Укажите полное доменное имя ноды, например node.example.com.")
-
-try:
-    published = {
-        ipaddress.ip_address(entry[4][0])
-        for entry in socket.getaddrinfo(domain, None, type=socket.SOCK_STREAM)
-    }
-    interfaces = json.loads(subprocess.check_output(["ip", "-j", "address", "show"]))
-    assigned = {
-        ipaddress.ip_address(address["local"])
-        for interface in interfaces for address in interface["addr_info"]
-        if address["scope"] == "global"
-    }
-except (OSError, ValueError, subprocess.CalledProcessError):
-    sys.exit("Не удалось проверить DNS и сетевые адреса VPS.")
-
-if not published or any(not address.is_global for address in published):
-    sys.exit("Для HTTP-01 нужны публичные A/AAAA-записи домена ноды.")
-if not published.issubset(assigned):
-    mismatch = ", ".join(str(address) for address in sorted(published - assigned, key=str))
-    sys.exit(f"DNS указывает за пределы VPS ({mismatch}). Проверьте A/AAAA и прямое соединение без CDN.")
-PY
+    local domain=${NODE_DOMAIN%.} result=0
+    domain=${domain,,}
+    if ! valid_domain "$domain"; then
+        fail 'Введите имя домена, например node.example.com.'
+        return 1
+    fi
+    timeout 12s python3 "$PROJECT_DIR/lib/selfsteal-dns.py" "$domain" "${1:-quiet}" || result=$?
+    if (( result == 124 )); then
+        fail "DNS для $domain не ответил за 12 секунд. Проверьте резолвер VPS."
+        return 1
+    fi
+    return "$result"
 }
 
 _selfsteal_caddy_preflight() {
@@ -58,7 +35,7 @@ _selfsteal_caddy_preflight() {
 selfsteal_preflight() {
     local port listening service pid
     local -a ports=(80 8443) owned_units=() own_listeners=()
-    _selfsteal_validate_domain || return 1
+    _selfsteal_validate_domain quiet || return 1
     if [[ $SELFSTEAL_SERVER == caddy ]]; then
         _selfsteal_caddy_preflight || return 1
         ports+=(2019)
@@ -135,10 +112,7 @@ _selfsteal_caddy_verify() {
 
 _selfsteal_caddy_apply() {
     local stage attempt
-    if ! command -v caddy >/dev/null; then
-        apt-get update || return 1
-        DEBIAN_FRONTEND=noninteractive apt-get install -y caddy || return 1
-    fi
+    apt_install_missing caddy || return 1
     install -d -m 0755 /etc/caddy "$_selfsteal_site" || return 1
     if [[ ! -f $_selfsteal_site/index.html ]]; then
         install -m 0644 "$PROJECT_DIR/templates/index.html" "$_selfsteal_site/index.html" || return 1

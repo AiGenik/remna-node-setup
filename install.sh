@@ -277,7 +277,7 @@ release_install_main() (
     fi
     if ! command -v jq >/dev/null || ! command -v curl >/dev/null; then
         apt-get update || return 1
-        apt-get install -y jq curl ca-certificates || return 1
+        apt-get -o DPkg::Lock::Timeout=120 install -y jq curl ca-certificates || return 1
     fi
 
     stage=$(release_create_stage) || return 1

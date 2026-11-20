@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-SNAPSHOT_CONFIG=("$CONFIG_DIR/node.json" "$NODE_SECRET")
+SNAPSHOT_CONFIG=("$CONFIG_DIR/node.json" "$CONFIG_DIR/host.json" "$NODE_SECRET")
 SNAPSHOT_NODE=("$NODE_DIR/compose.yaml" /etc/logrotate.d/remna-node-setup /etc/logrotate.d/remna-node-setup-node)
 SNAPSHOT_CADDY=(/etc/caddy/Caddyfile /var/www/remna-node-setup/index.html)
 SNAPSHOT_NGINX=(/etc/nginx/conf.d/remna-node-setup.conf

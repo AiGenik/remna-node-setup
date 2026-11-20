@@ -99,8 +99,7 @@ node_prepare_docker() {
             return 1
         fi
     done
-    apt-get update || return 1
-    DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl gpg || return 1
+    apt_install_missing ca-certificates curl gpg || return 1
     install -d -m 0755 /etc/apt/keyrings || return 1
     key_dir=$(mktemp -d) || return 1
     if ! curl --fail --silent --show-error --location --max-time 30 \
@@ -130,8 +129,7 @@ Architectures: $architecture
 Signed-By: $_node_apt_key
 EOF_APT
     chmod 0644 "$_node_apt_source" || return 1
-    apt-get update || return 1
-    DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin ||
+    apt_install_missing docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin ||
         return 1
     systemctl enable --now docker.service || return 1
     _node_docker compose version >/dev/null

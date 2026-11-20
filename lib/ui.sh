@@ -5,6 +5,8 @@ ui_init() {
     UI_CLEAR=no
     UI_ACCENT=
     UI_BOLD=
+    UI_MUTED=
+    UI_WARN=
     UI_RESET=
     UI_VERSION=$(version_get version) || return
     if [[ -t 0 && -t 1 && -t 2 ]]; then
@@ -14,22 +16,45 @@ ui_init() {
             UI_BOLD=$'\033[1m'
             UI_RESET=$'\033[0m'
             if [[ -z ${NO_COLOR+x} ]]; then
-                UI_ACCENT=$'\033[1;36m'
+                UI_ACCENT=$'\033[1;96m'
+                UI_MUTED=$'\033[2m'
+                UI_WARN=$'\033[1;93m'
             fi
         fi
     fi
 }
 
+ui_layout() {
+    local rows=24 columns=80 measured_rows measured_columns
+    if [[ $UI_CLEAR == yes ]] && read -r measured_rows measured_columns < <(stty size 2>/dev/null); then
+        if [[ $measured_rows =~ ^[1-9][0-9]*$ ]]; then rows=$measured_rows; fi
+        if [[ $measured_columns =~ ^[1-9][0-9]*$ ]]; then columns=$measured_columns; fi
+    fi
+    UI_COMPACT=no
+    if (( columns < 58 || rows < 24 )); then UI_COMPACT=yes; fi
+    UI_RULE_WIDTH=$(( columns > 62 ? 58 : columns - 4 ))
+}
+
 ui_screen() {
+    local title=$1 parent=${2-} line
+    ui_layout
     if [[ $UI_CLEAR == yes ]]; then
         # Redraw the viewport and leave the SSH terminal's scrollback intact.
         printf '\033[H\033[2J'
     else
         printf '\n'
     fi
-    printf '  %sRemna Node Setup%s  v%s\n\n' "${UI_ACCENT:-$UI_BOLD}" "$UI_RESET" "$UI_VERSION"
-    printf '  %s%s%s\n' "$UI_BOLD" "$1" "$UI_RESET"
-    printf '  %s\n\n' '────────────────────────────────────────'
+    printf '  %s◆─●  Remna Node Setup%s  %sv%s%s\n' "${UI_ACCENT:-$UI_BOLD}" "$UI_RESET" "$UI_MUTED" "$UI_VERSION" "$UI_RESET"
+    if [[ -n $parent ]] && (( ${#parent} + ${#title} + 3 <= UI_RULE_WIDTH )); then
+        printf '  %s%s / %s%s%s\n' "$UI_MUTED" "$parent" "$UI_RESET$UI_BOLD" "$title" "$UI_RESET"
+    else
+        printf '  %s%s%s\n' "$UI_BOLD" "$title" "$UI_RESET"
+    fi
+    if (( UI_RULE_WIDTH >= 10 )); then
+        printf -v line '%*s' "$UI_RULE_WIDTH" ''
+        printf '  %s%s%s\n' "$UI_MUTED" "${line// /─}" "$UI_RESET"
+    fi
+    printf '\n'
 }
 
 ui_section() {
@@ -37,14 +62,69 @@ ui_section() {
 }
 
 ui_step() {
-    ui_screen "Установка ноды  /  Шаг $1 из 7"
-    ui_section "$2"
+    local i=1 total=${3:-7}
+    ui_screen "Шаг $1 из $total" 'Установка ноды'
+    printf '  '
+    while (( i <= total )); do
+        if (( i <= $1 )); then
+            printf '%s━%s' "${UI_ACCENT:-$UI_BOLD}" "$UI_RESET"
+        else
+            printf '%s─%s' "$UI_MUTED" "$UI_RESET"
+        fi
+        i=$(( i + 1 ))
+    done
+    printf '  %s%s%s\n\n' "$UI_BOLD" "$2" "$UI_RESET"
 }
 
 ui_pause() {
     if [[ $UI_INTERACTIVE != yes ]]; then return 0; fi
-    printf '\n  Enter — %s ' "$1" >&2
+    printf '\n  %sEnter — %s%s ' "$UI_BOLD" "$1" "$UI_RESET" >&2
     IFS= read -r
+}
+
+ui_run() {
+    local title=$1
+    shift
+    if [[ ${UI_CLEAR:-no} != yes ]]; then
+        "$@"
+        return
+    fi
+    (
+        local output status=0 mark='✓'
+        output=$(mktemp) || return
+        trap 'rm -f -- "$output"' EXIT
+        printf '  %s…%s %s' "$UI_MUTED" "$UI_RESET" "$title"
+        "$@" > "$output" 2>&1 || status=$?
+        if (( status != 0 )); then mark='×'; fi
+        printf '\r\033[K  %s%s%s %s\n' "$UI_BOLD" "$mark" "$UI_RESET" "$title"
+        if (( status != 0 )); then tail -n 16 -- "$output" >&2; fi
+        return "$status"
+    )
+}
+
+ui_menu_status() (
+    local page=$1 configured='Нода ещё не настроена' address
+    if [[ $page == main ]]; then
+        if load_config 2>/dev/null; then
+            configured='Настройки ноды сохранены'
+            if valid_domain "$NODE_DOMAIN" && valid_port "$NODE_PORT"; then
+                address=$NODE_DOMAIN:$NODE_PORT
+                if (( ${#address} + 11 <= UI_RULE_WIDTH )); then configured="Нода · $address"; fi
+            fi
+        elif [[ -s ${CONFIG_DIR:-/etc/remna-node-setup}/host.json ]]; then
+            configured='Компоненты настроены · ноды пока нет'
+        fi
+        printf '  %s●%s %s\n' "$UI_ACCENT" "$UI_RESET" "$configured"
+    fi
+    if [[ -s ${PENDING_FILE:-} ]]; then
+        printf '  %s● Сеть ждёт подтверждения SSH%s\n' "${UI_WARN:-$UI_BOLD}" "$UI_RESET"
+        if [[ $page == main ]]; then printf '    С нового SSH-сеанса → [4] → [3]\n'; fi
+    fi
+    if [[ $page == main || -s ${PENDING_FILE:-} ]]; then printf '\n'; fi
+)
+
+ui_menu_key() {
+    printf '  %s[%s]%s %s%s%s\n' "${UI_ACCENT:-$UI_BOLD}" "$1" "$UI_RESET" "$UI_BOLD" "$2" "$UI_RESET"
 }
 
 ui_preparation() {
@@ -94,21 +174,23 @@ MENU_ACTIONS=(
     'components|1|Настроить self-steal|Caddy или Nginx|selfsteal'
     'components|2|Настроить UFW и Fail2Ban|Правила входящих соединений и защита SSH|security'
     'components|3|Включить BBR и fq|Настройки TCP, если их поддерживает ядро|bbr'
-    'components|4|Включить или обновить TrafficGuard|Список известных сканеров|update traffic-guard'
+    'components|4|TrafficGuard|Включить или обновить список сканеров|update traffic-guard'
+    'components|5|Установить только ноду|Подключение к панели и правила доступа|install node-only'
     'diagnostics|1|Статус|Нода и установленные компоненты|status'
     'diagnostics|2|Проверить сервисы|Порты, компоненты и место на диске|doctor'
     'diagnostics|3|Логи ноды|Последние сообщения контейнера|logs'
+    'diagnostics|4|Проверить DNS домена|Записи A/AAAA и IP VPS|dns'
     'recovery|1|Сохранить снимок|Создать резервную копию конфигурации|backup'
     'recovery|2|Восстановить снимок|Выбрать сохранённую конфигурацию|restore'
     'recovery|3|Подтвердить сетевые настройки|Открыть этот пункт из нового SSH-сеанса|confirm'
-    'recovery|4|Отменить ожидающие изменения сети|Восстановить конфигурацию до подтверждения|rollback'
+    'recovery|4|Откатить сетевые изменения|Восстановить конфигурацию до подтверждения|rollback'
     'updates|1|Обновить скрипт|Установить последний релиз с GitHub|update tool'
     'updates|2|Обновить ноду|Применить образ из текущего релиза|update node'
     'updates|3|Откатить версию скрипта|Вернуться к предыдущему релизу|rollback tool'
 )
 
 show_menu() {
-    local page=main title choice row section index label detail action notice='' id
+    local page=main parent title choice row section index label detail action notice='' id snapshots
     local -a command=()
     while true; do
         case "$page" in
@@ -118,11 +200,10 @@ show_menu() {
             recovery) title='Снимки и восстановление' ;;
             updates) title='Обновления' ;;
         esac
-        ui_screen "$title"
-        if [[ $page == main && -s $PENDING_FILE ]]; then
-            info '  Сеть ждёт подтверждения из нового SSH-подключения.'
-            printf '\n'
-        fi
+        parent=
+        if [[ $page != main ]]; then parent='Меню'; fi
+        ui_screen "$title" "$parent"
+        ui_menu_status "$page"
 
         local -A labels=() actions=()
         for row in "${MENU_ACTIONS[@]}"; do
@@ -130,17 +211,25 @@ show_menu() {
             [[ $section == "$page" ]] || continue
             labels[$index]=$label
             actions[$index]=$action
-            printf '  %s%2s%s  %s%s%s\n' "$UI_ACCENT" "$index" "$UI_RESET" "$UI_BOLD" "$label" "$UI_RESET"
-            printf '      %s\n' "$detail"
+            ui_menu_key "$index" "$label"
+            if [[ $UI_COMPACT != yes ]]; then
+                printf '      %s%s%s\n' "$UI_MUTED" "$detail" "$UI_RESET"
+            fi
         done
-        if [[ $page == main ]]; then
-            info '   0  Выйти'
-        else
-            info '   0  Назад'
-        fi
         printf '\n'
-        if [[ -n $notice ]]; then warn "$notice"; notice=; fi
+        if [[ $page == main ]]; then
+            printf '  %s[0] Выйти%s\n' "$UI_MUTED" "$UI_RESET"
+        else
+            printf '  %s[0] Назад   [q] Выйти%s\n' "$UI_MUTED" "$UI_RESET"
+        fi
+        if [[ -n $notice ]]; then
+            printf '\n  %s%s%s\n' "${UI_WARN:-$UI_BOLD}" "$notice" "$UI_RESET"
+            notice=
+        fi
         choice=$(prompt '  Номер пункта →') || return 0
+        choice=${choice#"${choice%%[![:space:]]*}"}
+        choice=${choice%"${choice##*[![:space:]]}"}
+        if [[ $choice == [qQ] ]]; then return 0; fi
         if [[ $choice == 0 ]]; then
             if [[ $page == main ]]; then return 0; fi
             page=main
@@ -159,12 +248,18 @@ show_menu() {
                 ui_pause 'вернуться в меню' || return 0
                 continue
                 ;;
-            *) ui_screen "${labels[$choice]}" ;;
+            *) ui_screen "${labels[$choice]}" "$title" ;;
         esac
 
         read -r -a command <<< "$action"
         if [[ $action == restore ]]; then
-            find "$BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d -printf '  %f\n' | sort -r
+            snapshots=$(find "$BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d -printf '  %f\n' | sort -r) || return
+            if [[ -z $snapshots ]]; then
+                info '  Сохраните первый снимок через пункт «Сохранить снимок».'
+                ui_pause 'вернуться в меню' || return 0
+                continue
+            fi
+            printf '%s\n' "$snapshots"
             id=$(prompt '  Идентификатор снимка [0 — назад] →') || return 0
             if [[ $id == 0 ]]; then continue; fi
             command+=("$id")

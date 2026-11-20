@@ -22,7 +22,7 @@ require_no_pending() {
 prepare_security() {
     local had_fail2ban=no
     if command -v fail2ban-client >/dev/null; then had_fail2ban=yes; fi
-    apt_install_missing ufw fail2ban python3-systemd ipset iptables || return
+    ui_run 'Пакеты защиты' apt_install_missing ufw fail2ban python3-systemd ipset iptables || return
     if [[ $had_fail2ban == no ]]; then systemctl disable --now fail2ban.service || return; fi
 }
 
@@ -112,25 +112,73 @@ show_panel_help() {
 }
 
 apply_installation() {
-    save_config && save_secret && security_apply || return
-    node_apply || return
-    if [[ $ENABLE_SELFSTEAL == yes ]]; then selfsteal_apply || return; fi
-    if [[ $ENABLE_BBR == yes ]]; then bbr_apply || return; fi
-    if [[ $ENABLE_TRAFFIC_GUARD == yes ]]; then traffic_guard_apply || return; fi
+    local mode=$1
+    save_config && save_secret && ui_run 'UFW и Fail2Ban' security_apply || return
+    ui_run 'Контейнер Remnawave' node_apply || return
+    if [[ $mode == full ]]; then
+        if [[ $ENABLE_SELFSTEAL == yes ]]; then
+            ui_run "HTTPS и сертификат ($SELFSTEAL_SERVER)" selfsteal_apply || return
+        fi
+        if [[ $ENABLE_BBR == yes ]]; then bbr_apply || return; fi
+        if [[ $ENABLE_TRAFFIC_GUARD == yes ]]; then ui_run 'Список TrafficGuard' traffic_guard_apply || return; fi
+    fi
+    rm -f -- "$CONFIG_DIR/host.json" || return
     show_panel_help
 }
 
+wizard_selfsteal_preflight() {
+    local previous=$1 choice
+    while ! selfsteal_preflight; do
+        if [[ $UI_INTERACTIVE != yes ]]; then return 1; fi
+        printf '\n'
+        info '  1  Повторить проверку'
+        info '  2  Изменить домен'
+        if [[ $previous != yes ]]; then info '  3  Установить ноду без self-steal'; fi
+        info '  0  Отменить установку'
+        while true; do
+            choice=$(prompt '  Действие →' '1') || return
+            case "$choice" in
+                0) info 'Установка отменена.'; return 2 ;;
+                1) break ;;
+                2)
+                    NODE_DOMAIN=$(wizard_input 'Поддомен ноды' "$NODE_DOMAIN" check_node_domain) || return
+                    info "  Укажите $NODE_DOMAIN также в карточке ноды Remnawave."
+                    break
+                    ;;
+                3)
+                    if [[ $previous != yes ]]; then
+                        ENABLE_SELFSTEAL=no
+                        return 0
+                    fi
+                    ;;
+            esac
+            warn 'Выберите действие из списка.'
+        done
+    done
+}
+
 install_wizard() {
-    local scope='config network node' continue_apply detected_port
+    local mode=${1:-full} scope='config network node' continue_apply detected_port result=0
+    local steps=7 key_step=6 review_step=7
     local components='UFW, Fail2Ban'
     local old_domain='' old_panel='' old_port=2222 old_admin='' old_ssh='' old_selfsteal=no old_bbr=no old_traffic=no
-    local old_webserver=caddy
+    local old_webserver=caddy saved=no
+    if [[ $mode == node-only ]]; then steps=6; key_step=5; review_step=6; fi
     apt_install_missing ca-certificates curl python3 iproute2 || return
     get_admin_ip || return
 
     if load_config; then
+        saved=yes
+    elif [[ -e $CONFIG_DIR/node.json || -L $CONFIG_DIR/node.json ]]; then
+        fail 'Не удалось прочитать настройки ноды. Проверьте node.json или восстановите снимок.'
+        return 1
+    elif [[ -e $CONFIG_DIR/host.json || -L $CONFIG_DIR/host.json ]]; then
+        load_host_settings || return
+        saved=yes
+    fi
+    if [[ $saved == yes ]]; then
         old_domain=$NODE_DOMAIN
-        old_port=$NODE_PORT
+        old_port=${NODE_PORT:-2222}
         old_panel=$PANEL_IPS
         old_ssh=$SSH_PORT
         old_admin=$ADMIN_IPS
@@ -140,27 +188,31 @@ install_wizard() {
         old_traffic=$ENABLE_TRAFFIC_GUARD
     fi
 
-    ui_step 1 'Домен ноды'
+    ui_step 1 'Домен ноды' "$steps"
     info '  A-запись node.example.com должна указывать на IPv4 этого VPS.'
     info '  Для self-steal в Cloudflare выберите DNS only.'
     printf '\n'
     NODE_DOMAIN=$(wizard_input 'Поддомен ноды' "$old_domain" check_node_domain) || return
+    if [[ $mode == node-only && $old_selfsteal == yes && $NODE_DOMAIN != "$old_domain" ]]; then
+        fail "Для действующего self-steal используется $old_domain. Укажите его или смените домен через полный мастер."
+        return 1
+    fi
 
-    ui_step 2 'Служебный порт ноды'
+    ui_step 2 'Служебный порт ноды' "$steps"
     info '  Remnawave → Ноды → Управление → +'
     info "  В поле «Домен или IP» введите $NODE_DOMAIN."
     info '  Вставьте Node Port или строку NODE_PORT из Compose.'
     printf '\n'
     NODE_PORT=$(wizard_input 'NODE_PORT из панели' "$old_port" check_node_port) || return
 
-    ui_step 3 'Исходящий IP панели'
+    ui_step 3 'Исходящий IP панели' "$steps"
     info '  Выполните на сервере панели Remnawave'
     info '  curl -4fsS https://api.ipify.org && echo'
     info '  Вставьте полученный IP. Несколько адресов — через пробел.'
     printf '\n'
     PANEL_IPS=$(wizard_input 'IP панели' "$old_panel" check_panel_ips) || return
 
-    ui_step 4 'Доступ по SSH'
+    ui_step 4 'Доступ по SSH' "$steps"
     detected_port=$(detect_ssh_port "$old_ssh") || return
     info '  Enter оставит предложенный порт.'
     SSH_PORT=$(wizard_input 'SSH-порт VPS' "${detected_port:-22}" check_ssh_port "$detected_port") || return
@@ -168,50 +220,52 @@ install_wizard() {
     info '  Доверенный IP — ваш адрес для SSH. Fail2Ban пропускает его.'
     ADMIN_IPS=$(wizard_input 'Доверенные IP или подсети' "${old_admin:-$ADMIN_IP}" normalize_ips network) || return
 
-    ui_step 5 'Дополнительные компоненты'
     ENABLE_SELFSTEAL=$old_selfsteal
-    if [[ $ENABLE_SELFSTEAL == no ]]; then
-        ENABLE_SELFSTEAL=$(yes_no '  Self-steal — HTTPS для VLESS REALITY?' y) || return
-    fi
     SELFSTEAL_SERVER=$old_webserver
-    if [[ $ENABLE_SELFSTEAL == yes ]]; then
-        SELFSTEAL_SERVER=$(select_selfsteal_server "$old_webserver") || return
-    fi
     ENABLE_BBR=$old_bbr
-    if [[ $ENABLE_BBR == no ]]; then
-        ENABLE_BBR=$(yes_no '  BBR + fq — настройка TCP?' y) || return
-    fi
     ENABLE_TRAFFIC_GUARD=$old_traffic
-    if [[ $ENABLE_TRAFFIC_GUARD == no ]]; then
-        ENABLE_TRAFFIC_GUARD=$(yes_no '  TrafficGuard — блокировка сканеров?' n) || return
-    fi
-    if [[ $ENABLE_TRAFFIC_GUARD == yes && -z ${ADMIN_IP:-}${ADMIN_IPS:-} ]]; then
-        fail 'Для TrafficGuard укажите доверенный IP или подсеть администратора.'
-        return 1
+    if [[ $mode == full ]]; then
+        ui_step 5 'Дополнительные компоненты' "$steps"
+        if [[ $ENABLE_SELFSTEAL == no ]]; then
+            ENABLE_SELFSTEAL=$(yes_no '  Self-steal — HTTPS для VLESS REALITY?' y) || return
+        fi
+        if [[ $ENABLE_SELFSTEAL == yes ]]; then
+            SELFSTEAL_SERVER=$(select_selfsteal_server "$old_webserver") || return
+            wizard_selfsteal_preflight "$old_selfsteal" || result=$?
+            if (( result == 2 )); then return 0; fi
+            if (( result != 0 )); then return "$result"; fi
+        fi
+        if [[ $ENABLE_BBR == no ]]; then
+            ENABLE_BBR=$(yes_no '  BBR + fq — настройка TCP?' y) || return
+        fi
+        if [[ $ENABLE_TRAFFIC_GUARD == no ]]; then
+            ENABLE_TRAFFIC_GUARD=$(yes_no '  TrafficGuard — блокировка сканеров?' n) || return
+        fi
+        if [[ $ENABLE_TRAFFIC_GUARD == yes && -z ${ADMIN_IP:-}${ADMIN_IPS:-} ]]; then
+            fail 'Для TrafficGuard укажите доверенный IP или подсеть администратора.'
+            return 1
+        fi
+        if [[ $ENABLE_SELFSTEAL == yes ]]; then scope+=' selfsteal'; fi
+        if [[ $ENABLE_BBR == yes ]]; then scope+=' bbr'; fi
     fi
 
     security_preflight && node_preflight || return
-    if [[ $ENABLE_SELFSTEAL == yes ]]; then
-        selfsteal_preflight || return
-        scope+=' selfsteal'
-    fi
-    if [[ $ENABLE_BBR == yes ]]; then scope+=' bbr'; fi
 
-    ui_step 6 'Ключ подключения ноды'
+    ui_step "$key_step" 'Ключ подключения ноды' "$steps"
     info '  Скопируйте Secret Key в карточке ноды или строку SECRET_KEY из Compose.'
     info '  Вставьте ключ. Счётчик покажет ввод. Нажмите Enter.'
     printf '\n'
     ask_secret || return
 
-    ui_step 7 'Проверка перед установкой'
+    ui_step "$review_step" 'Проверка перед установкой' "$steps"
     printf '  %s\n' "Нода             $NODE_DOMAIN" "Панель           $PANEL_IPS" \
         "Порт для панели  TCP $NODE_PORT" "Доступ по SSH    TCP $SSH_PORT" 'Доступ к VPN     TCP 443'
-    if [[ $ENABLE_SELFSTEAL == yes ]]; then
-        info '  Сертификат       TCP 80'
-        components+=", self-steal ($SELFSTEAL_SERVER)"
+    if [[ $ENABLE_SELFSTEAL == yes ]]; then info '  HTTP для ACME   TCP 80'; fi
+    if [[ $mode == full ]]; then
+        if [[ $ENABLE_SELFSTEAL == yes ]]; then components+=", self-steal ($SELFSTEAL_SERVER)"; fi
+        if [[ $ENABLE_BBR == yes ]]; then components+=', BBR'; fi
+        if [[ $ENABLE_TRAFFIC_GUARD == yes ]]; then components+=', TrafficGuard'; fi
     fi
-    if [[ $ENABLE_BBR == yes ]]; then components+=', BBR'; fi
-    if [[ $ENABLE_TRAFFIC_GUARD == yes ]]; then components+=', TrafficGuard'; fi
     info "  Компоненты       $components"
     printf '\n'
     info '  Служебный порт откроется только для указанных IP панели.'
@@ -220,12 +274,13 @@ install_wizard() {
     continue_apply=$(yes_no '  Начать установку?' n) || return
     [[ $continue_apply == yes ]] || { info 'Установка отменена.'; return 0; }
     ui_screen 'Установка ноды  /  Применение настроек'
-    node_prepare_image && prepare_security || return
-    run_change "$scope" apply_installation
+    ui_run 'Docker и образ ноды' node_prepare_image && prepare_security || return
+    run_change "$scope" apply_installation "$mode"
 }
 
 apply_selfsteal() {
-    save_config && security_apply && selfsteal_apply && show_panel_help
+    save_config && ui_run 'Правила доступа' security_apply &&
+        ui_run "HTTPS и сертификат ($SELFSTEAL_SERVER)" selfsteal_apply && show_panel_help
 }
 
 add_selfsteal() {
@@ -238,7 +293,7 @@ add_selfsteal() {
 
 configure_security() {
     require_config && security_preflight && prepare_security || return
-    run_change network security_apply
+    run_change network ui_run 'UFW и Fail2Ban' security_apply
 }
 
 apply_bbr() {
@@ -252,7 +307,7 @@ configure_bbr() {
 }
 
 apply_traffic_guard() {
-    save_config && traffic_guard_apply
+    save_config && ui_run 'Список TrafficGuard' traffic_guard_apply
 }
 
 configure_traffic_guard() {
@@ -274,7 +329,9 @@ update_node() {
 }
 
 backup_scope() {
-    local scope='config node network'
+    local scope='config'
+    if [[ -n $NODE_PORT ]]; then scope+=' node'; fi
+    if command -v ufw >/dev/null; then scope+=' network'; fi
     if [[ $ENABLE_SELFSTEAL == yes ]]; then scope+=' selfsteal'; fi
     if [[ $ENABLE_BBR == yes ]]; then scope+=' bbr'; fi
     printf '%s\n' "$scope"
@@ -282,7 +339,10 @@ backup_scope() {
 
 create_backup() {
     local id scope
-    require_config || return
+    if ! load_config && ! load_host_settings; then
+        fail 'Сначала настройте ноду или один из компонентов.'
+        return 1
+    fi
     scope=$(backup_scope) || return
     id=$(capture_snapshot "$scope") || return
     info "Снимок сохранён в $BACKUP_DIR/$id."
@@ -302,9 +362,9 @@ status_all() {
     local id
     id=$(pending_id) || return
     if [[ -n $id ]]; then info "Ожидается подтверждение SSH. Снимок $id."; fi
-    if ! load_config; then
+    if ! load_config && ! load_host_settings; then
         node_status || :
-        info 'Настройте узел через пункт «Установить ноду».'
+        info 'Начните с мастера или выберите отдельный компонент.'
         return 0
     fi
     node_status || :
@@ -316,21 +376,38 @@ status_all() {
 
 doctor() {
     local result=0
-    require_config || return
+    if ! load_config && ! load_host_settings; then
+        fail 'Сначала настройте ноду или один из компонентов.'
+        return 1
+    fi
     node_status || result=1
     if [[ $ENABLE_SELFSTEAL == yes ]]; then
         selfsteal_status || result=1
-        if ! ss -H -ltn 'sport = :443' | grep -q .; then
+        if [[ -n $NODE_PORT ]] && ! ss -H -ltn 'sport = :443' | grep -q .; then
             warn 'TCP 443 пока не слушает. Примените профиль Xray в панели.'
             result=1
         fi
     fi
-    if ! security_ufw_active; then warn 'UFW неактивен.'; result=1; fi
-    if ! fail2ban-client status sshd >/dev/null 2>&1; then warn 'Fail2Ban для SSH недоступен.'; result=1; fi
+    if [[ -n $SSH_PORT ]]; then
+        if ! security_ufw_active; then warn 'UFW неактивен.'; result=1; fi
+        if ! fail2ban-client status sshd >/dev/null 2>&1; then warn 'Fail2Ban для SSH недоступен.'; result=1; fi
+    fi
     if [[ $ENABLE_TRAFFIC_GUARD == yes ]]; then traffic_guard_status || result=1; fi
     bbr_status
-    df -h -- "$NODE_DIR" "$BACKUP_DIR"
+    df -h -- "$STATE_DIR" "$BACKUP_DIR"
     return "$result"
+}
+
+check_dns() {
+    local domain=$1
+    if [[ -z $domain ]]; then
+        if load_config || load_host_settings; then domain=$NODE_DOMAIN; fi
+        if [[ $UI_INTERACTIVE == yes ]]; then
+            domain=$(wizard_input 'Поддомен ноды' "$domain" check_node_domain) || return
+        fi
+    fi
+    NODE_DOMAIN=$(check_node_domain "$domain") || return
+    _selfsteal_validate_domain report
 }
 
 dispatch() (
@@ -338,6 +415,7 @@ dispatch() (
     case "$action" in
         status) [[ $# == 1 ]] || return 2; status_all; return ;;
         doctor) [[ $# == 1 ]] || return 2; doctor; return ;;
+        dns) [[ $# -le 2 ]] || return 2; check_dns "$target"; return ;;
         logs) [[ $# == 1 ]] || return 2; node_logs; return ;;
     esac
     release_acquire_lock || return
@@ -350,10 +428,22 @@ dispatch() (
     esac
     require_no_pending || return
     case "$action" in
-        install) [[ $# == 1 ]] || return 2; install_wizard ;;
-        selfsteal) [[ $# -le 2 ]] || return 2; add_selfsteal "$target" ;;
-        security) [[ $# == 1 ]] || return 2; configure_security ;;
-        bbr) [[ $# == 1 ]] || return 2; configure_bbr ;;
+        install)
+            [[ $# == 1 || ( $# == 2 && $target == node-only ) ]] || return 2
+            install_wizard "$target"
+            ;;
+        selfsteal)
+            [[ $# -le 2 ]] || return 2
+            if [[ -e $CONFIG_DIR/node.json ]]; then add_selfsteal "$target"; else standalone_selfsteal "$target"; fi
+            ;;
+        security)
+            [[ $# == 1 ]] || return 2
+            if [[ -e $CONFIG_DIR/node.json ]]; then configure_security; else standalone_security; fi
+            ;;
+        bbr)
+            [[ $# == 1 ]] || return 2
+            if [[ -e $CONFIG_DIR/node.json ]]; then configure_bbr; else standalone_bbr; fi
+            ;;
         backup) [[ $# == 1 ]] || return 2; create_backup ;;
         restore) [[ $# == 2 ]] || return 2; do_restore "$target" ;;
         rollback) release_rollback ;;
@@ -361,7 +451,10 @@ dispatch() (
             case "$target" in
                 tool) [[ $# -le 3 ]] || return 2; release_update "${3-}" ;;
                 node) [[ $# == 2 ]] || return 2; update_node ;;
-                traffic-guard) [[ $# == 2 ]] || return 2; configure_traffic_guard ;;
+                traffic-guard)
+                    [[ $# == 2 ]] || return 2
+                    if [[ -e $CONFIG_DIR/node.json ]]; then configure_traffic_guard; else standalone_traffic_guard; fi
+                    ;;
                 *) usage >&2; return 2 ;;
             esac ;;
         *) usage >&2; return 2 ;;

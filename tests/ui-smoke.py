@@ -20,6 +20,7 @@ source lib/common.sh
 source lib/ui.sh
 source lib/manager.sh
 PROJECT_DIR=$PWD
+CONFIG_DIR=/dev/null
 version_get() { printf '0.1.3\n'; }
 apt_install_missing() { :; }
 get_admin_ip() { ADMIN_IP=198.51.100.8; }

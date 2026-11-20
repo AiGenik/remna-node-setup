@@ -7,31 +7,39 @@ security_ufw_active() {
 }
 
 security_preflight() {
+    local node_port=${NODE_PORT:-}
     valid_port "${SSH_PORT:-}" || { fail "Укажите действующий TCP-порт SSH."; return 1; }
-    valid_port "${NODE_PORT:-}" || { fail "Укажите служебный TCP-порт ноды из панели."; return 1; }
-    if [[ $NODE_PORT == "$SSH_PORT" || $NODE_PORT == 80 || $NODE_PORT == 443 ||
-          $NODE_PORT == 8443 || $SSH_PORT == 443 || $SSH_PORT == 8443 ||
-          ( $SSH_PORT == 80 && ${ENABLE_SELFSTEAL:-no} == yes ) ]]; then
+    if [[ -n $node_port ]] && ! valid_port "$node_port"; then
+        fail "Укажите служебный TCP-порт ноды из панели."
+        return 1
+    fi
+    if [[ ( -n $node_port && ( $node_port == "$SSH_PORT" || $node_port == 80 ||
+           $node_port == 443 || $node_port == 8443 || $SSH_PORT == 443 || $SSH_PORT == 8443 ) ) ||
+          ( ${ENABLE_SELFSTEAL:-no} == yes && ( $SSH_PORT == 80 || $SSH_PORT == 8443 ) ) ]]; then
         fail "Служебный порт ноды или порт SSH конфликтует с портом проекта."
         return 1
     fi
-    if ! python3 - "${PANEL_IPS:-}" "${ADMIN_IPS:-} ${ADMIN_IP:-}" <<'PY'
+    if ! python3 - "$node_port" "${PANEL_IPS:-}" "${ADMIN_IPS:-} ${ADMIN_IP:-}" <<'PY'
 import ipaddress
 import sys
 
 try:
-    panel = sys.argv[1].split()
-    if not panel:
+    node_port, panel, admins = sys.argv[1:]
+    if node_port and not panel.split():
         raise ValueError
-    for address in panel:
+    for address in panel.split():
         ipaddress.ip_address(address)
-    for address in sys.argv[2].split():
+    for address in admins.split():
         ipaddress.ip_network(address, strict=False)
 except ValueError:
     sys.exit(1)
 PY
     then
-        fail "Укажите IP-адрес панели и проверьте доверенные адреса SSH."
+        if [[ -n $node_port ]]; then
+            fail "Укажите IP-адрес панели и проверьте доверенные адреса SSH."
+        else
+            fail "Проверьте доверенные адреса SSH."
+        fi
         return 1
     fi
 
@@ -105,20 +113,33 @@ security_apply() {
     fi
     ufw prepend allow in proto tcp to any port "$SSH_PORT" comment remna-node-setup:ssh || return 1
     ufw default deny incoming || return 1
-    ufw prepend deny in proto tcp to any port "$NODE_PORT" comment remna-node-setup:node || return 1
-    read -r -a panel_addresses <<< "$PANEL_IPS"
-    for panel_ip in "${panel_addresses[@]}"; do
-        ufw prepend allow in proto tcp from "$panel_ip" to any port "$NODE_PORT" comment remna-node-setup:panel || return 1
-    done
-    ufw prepend allow in proto tcp to any port 443 comment remna-node-setup:vpn || return 1
+    if [[ -n ${NODE_PORT:-} ]]; then
+        ufw prepend deny in proto tcp to any port "$NODE_PORT" comment remna-node-setup:node || return 1
+        read -r -a panel_addresses <<< "$PANEL_IPS"
+        for panel_ip in "${panel_addresses[@]}"; do
+            ufw prepend allow in proto tcp from "$panel_ip" to any port "$NODE_PORT" comment remna-node-setup:panel || return 1
+        done
+        ufw prepend allow in proto tcp to any port 443 comment remna-node-setup:vpn || return 1
+    fi
     if [[ ${ENABLE_SELFSTEAL:-no} == yes ]]; then
-        ufw prepend allow in proto tcp to any port 80 comment remna-node-setup:acme || return 1
+        security_allow_acme || return 1
     fi
 
     ufw --force enable || return 1
     security_ufw_active || { fail "UFW не активировался."; return 1; }
     security_install_sshd_jail || return 1
     info "UFW включён. Fail2Ban защищает SSH на порту $SSH_PORT."
+}
+
+security_allow_acme() {
+    ufw prepend allow in proto tcp to any port 80 comment remna-node-setup:acme
+}
+
+security_ufw_managed() {
+    local rules
+    security_ufw_active || return 1
+    rules=$(LC_ALL=C ufw status numbered) || return 1
+    grep -Eq '# remna-node-setup:ssh([[:space:]]|$)' <<< "$rules"
 }
 
 security_status() {
