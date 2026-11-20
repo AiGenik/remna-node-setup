@@ -4,15 +4,17 @@ ui_init() {
     UI_INTERACTIVE=no
     UI_CLEAR=no
     UI_ACCENT=
+    UI_BOLD=
     UI_RESET=
     UI_VERSION=$(version_get version) || return
     if [[ -t 0 && -t 1 && -t 2 ]]; then
         UI_INTERACTIVE=yes
         if [[ -n ${TERM:-} && $TERM != dumb ]]; then
             UI_CLEAR=yes
+            UI_BOLD=$'\033[1m'
+            UI_RESET=$'\033[0m'
             if [[ -z ${NO_COLOR+x} ]]; then
                 UI_ACCENT=$'\033[1;36m'
-                UI_RESET=$'\033[0m'
             fi
         fi
     fi
@@ -25,13 +27,13 @@ ui_screen() {
     else
         printf '\n'
     fi
-    printf '  %sRemna Node Setup%s  v%s\n' "$UI_ACCENT" "$UI_RESET" "$UI_VERSION"
-    printf '  %s\n' "$1"
+    printf '  %sRemna Node Setup%s  v%s\n\n' "${UI_ACCENT:-$UI_BOLD}" "$UI_RESET" "$UI_VERSION"
+    printf '  %s%s%s\n' "$UI_BOLD" "$1" "$UI_RESET"
     printf '  %s\n\n' '────────────────────────────────────────'
 }
 
 ui_section() {
-    printf '  %s%s%s\n' "$UI_ACCENT" "$1" "$UI_RESET"
+    printf '  %s%s%s\n' "${UI_ACCENT:-$UI_BOLD}" "$1" "$UI_RESET"
 }
 
 ui_step() {
@@ -47,23 +49,39 @@ ui_pause() {
 
 ui_preparation() {
     ui_screen 'Подготовка к установке'
-    ui_section 'На стороне хостинга и DNS'
-    info '  Найдите публичный IPv4 нового VPS в кабинете хостинга.'
-    info '  Создайте A-запись для ноды, например node.example.com.'
-    info '  В значении A-записи укажите IPv4 этого VPS.'
-    info '  Для self-steal домен в Cloudflare должен быть в режиме DNS only.'
+    ui_section 'DNS'
+    info '  A-запись node.example.com → публичный IPv4 VPS.'
+    info '  Для self-steal в Cloudflare выберите DNS only.'
     printf '\n'
-    ui_section 'В панели Remnawave'
-    info '  Ноды → Управление (Nodes → Management) → +.'
-    info '  В поле «Домен или IP» введите поддомен ноды и проверьте Node Port.'
-    info '  Вверху карточки есть отдельное поле Secret Key (SECRET_KEY).'
-    info '  Оба значения есть под кнопкой «Скопировать docker-compose.yml».'
+    ui_section 'Панель Remnawave'
+    info '  Ноды → Управление → +'
+    info '  Укажите домен ноды. Скопируйте Node Port и Secret Key.'
     printf '\n'
-    ui_section 'На сервере панели'
-    info '  Возьмите исходящий IPv4 панели. Его можно посмотреть по команде'
+    ui_section 'IP панели'
+    info '  Выполните на сервере панели'
     info '  curl -4fsS https://api.ipify.org && echo'
     printf '\n'
     info '  Оставьте открытым текущее SSH-подключение к новому VPS.'
+}
+
+select_selfsteal_server() {
+    local current=$1 requested=${2:-} choice default=1
+    case "$requested" in
+        caddy|nginx) printf '%s\n' "$requested"; return 0 ;;
+        '') ;;
+        *) fail 'Укажите caddy или nginx.'; return 1 ;;
+    esac
+    if [[ $UI_INTERACTIVE != yes ]]; then printf '%s\n' "$current"; return 0; fi
+    if [[ $current == nginx ]]; then default=2; fi
+    printf '    1  Caddy  — автоматический HTTPS\n    2  Nginx  — сертификат через Certbot\n' >&2
+    while choice=$(prompt '  Веб-сервер →' "$default"); do
+        case "$choice" in
+            1) printf 'caddy\n'; return 0 ;;
+            2) printf 'nginx\n'; return 0 ;;
+            *) warn 'Выберите 1 или 2.' ;;
+        esac
+    done
+    return 1
 }
 
 MENU_ACTIONS=(
@@ -73,7 +91,7 @@ MENU_ACTIONS=(
     'main|4|Снимки и восстановление|Резервные копии и откат сетевых правил|@recovery'
     'main|5|Обновления|Версии скрипта и ноды|@updates'
     'main|6|Подготовка к установке|Где взять домен, адрес панели, порт и ключ|guide'
-    'components|1|Добавить self-steal|Локальный HTTPS-сайт на Caddy|selfsteal'
+    'components|1|Настроить self-steal|Caddy или Nginx|selfsteal'
     'components|2|Настроить UFW и Fail2Ban|Правила входящих соединений и защита SSH|security'
     'components|3|Включить BBR и fq|Настройки TCP, если их поддерживает ядро|bbr'
     'components|4|Включить или обновить TrafficGuard|Список известных сканеров|update traffic-guard'
@@ -112,7 +130,7 @@ show_menu() {
             [[ $section == "$page" ]] || continue
             labels[$index]=$label
             actions[$index]=$action
-            printf '  %s%2s%s  %s\n' "$UI_ACCENT" "$index" "$UI_RESET" "$label"
+            printf '  %s%2s%s  %s%s%s\n' "$UI_ACCENT" "$index" "$UI_RESET" "$UI_BOLD" "$label" "$UI_RESET"
             printf '      %s\n' "$detail"
         done
         if [[ $page == main ]]; then

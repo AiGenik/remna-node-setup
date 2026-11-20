@@ -83,23 +83,23 @@ valid_domain() {
 prompt() {
     local message=$1 default=${2-} answer
     if [[ -n $default ]]; then
-        printf '%s [%s] ' "$message" "$default" >&2
+        printf '%s%s [%s]%s ' "${UI_BOLD:-}" "$message" "$default" "${UI_RESET:-}" >&2
     else
-        printf '%s ' "$message" >&2
+        printf '%s%s%s ' "${UI_BOLD:-}" "$message" "${UI_RESET:-}" >&2
     fi
     IFS= read -r answer || return
     printf '%s\n' "${answer:-$default}"
 }
 
 yes_no() {
-    local answer default=н
-    if [[ $2 == y ]]; then default=д; fi
-    while answer=$(prompt "$1 (д/н) →" "$default"); do
-        case "$answer" in
+    local answer choices='y/N'
+    if [[ $2 == y ]]; then choices='Y/n'; fi
+    while answer=$(prompt "$1 [$choices]"); do
+        case "${answer:-$2}" in
             y|д|yes|да|Y|Д) printf 'yes\n'; return 0 ;;
             n|н|no|нет|N|Н) printf 'no\n'; return 0 ;;
         esac
-        warn 'Введите д или н.'
+        warn 'Введите y или n.'
         if [[ ${UI_INTERACTIVE:-no} != yes ]]; then return 1; fi
     done
     return 1
@@ -141,12 +141,13 @@ load_config() {
     [[ -r $file ]] || return 1
     data=$(jq -er '
       if .schema == 1 and (.node_port|type) == "number" and (.ssh_port|type) == "number"
-      then [.node_domain, .node_port, .panel_ips, .ssh_port, .admin_ips, .selfsteal, .bbr, .traffic_guard] | .[]
+      then [.node_domain, .node_port, .panel_ips, .ssh_port, .admin_ips, .selfsteal, .bbr, .traffic_guard,
+            (.selfsteal_server // "caddy")] | .[]
       else error("unsupported configuration")
       end' "$file") || return
     local fields
     mapfile -t fields <<< "$data"
-    [[ ${#fields[@]} == 8 ]] || return 1
+    [[ ${#fields[@]} == 9 && ${fields[8]} =~ ^(caddy|nginx)$ ]] || return 1
     NODE_DOMAIN=${fields[0]}
     NODE_PORT=${fields[1]}
     PANEL_IPS=${fields[2]}
@@ -155,6 +156,7 @@ load_config() {
     ENABLE_SELFSTEAL=${fields[5]}
     ENABLE_BBR=${fields[6]}
     ENABLE_TRAFFIC_GUARD=${fields[7]}
+    SELFSTEAL_SERVER=${fields[8]}
 }
 
 save_config() {
@@ -162,9 +164,10 @@ save_config() {
     tmp=$(mktemp "$CONFIG_DIR/.node.XXXXXX") || return
     if ! jq -n --arg domain "$NODE_DOMAIN" --argjson port "$NODE_PORT" \
         --arg panel "$PANEL_IPS" --argjson ssh "$SSH_PORT" --arg admin "$ADMIN_IPS" \
-        --arg selfsteal "$ENABLE_SELFSTEAL" --arg bbr "$ENABLE_BBR" --arg traffic "$ENABLE_TRAFFIC_GUARD" \
+        --arg selfsteal "$ENABLE_SELFSTEAL" --arg webserver "$SELFSTEAL_SERVER" \
+        --arg bbr "$ENABLE_BBR" --arg traffic "$ENABLE_TRAFFIC_GUARD" \
         '{schema:1,node_domain:$domain,node_port:$port,panel_ips:$panel,ssh_port:$ssh,admin_ips:$admin,
-          selfsteal:$selfsteal,bbr:$bbr,traffic_guard:$traffic}' > "$tmp"; then
+          selfsteal:$selfsteal,selfsteal_server:$webserver,bbr:$bbr,traffic_guard:$traffic}' > "$tmp"; then
         rm -f -- "$tmp"
         return 1
     fi

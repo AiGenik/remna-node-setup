@@ -5,7 +5,7 @@ _selfsteal_site=/var/www/remna-node-setup
 _selfsteal_marker='# Managed by remna-node-setup'
 _selfsteal_endpoint=127.0.0.1:8443
 
-_selfsteal_owned_config() {
+_selfsteal_caddy_owned_config() {
     [[ -f $_selfsteal_caddyfile && ! -L $_selfsteal_caddyfile ]] &&
         grep -Fxq "$_selfsteal_marker" "$_selfsteal_caddyfile"
 }
@@ -48,29 +48,42 @@ if not published.issubset(assigned):
 PY
 }
 
-selfsteal_preflight() {
-    local port listening caddy_pid
-    _selfsteal_validate_domain || return 1
-    if [[ -e $_selfsteal_caddyfile || -L $_selfsteal_caddyfile ]] && ! _selfsteal_owned_config; then
+_selfsteal_caddy_preflight() {
+    if [[ -e $_selfsteal_caddyfile || -L $_selfsteal_caddyfile ]] && ! _selfsteal_caddy_owned_config; then
         fail "Найдена сторонняя конфигурация Caddy. Для self-steal нужен отдельный VPS."
         return 1
     fi
+}
+
+selfsteal_preflight() {
+    local port listening service pid
+    local -a ports=(80 8443) owned_units=() own_listeners=()
+    _selfsteal_validate_domain || return 1
+    if [[ $SELFSTEAL_SERVER == caddy ]]; then
+        _selfsteal_caddy_preflight || return 1
+        ports+=(2019)
+    fi
+    if [[ $SELFSTEAL_SERVER == nginx ]] || _selfsteal_nginx_owned_config; then
+        nginx_selfsteal_preflight || return 1
+    fi
+    if _selfsteal_caddy_owned_config; then owned_units+=(caddy.service); fi
+    if _selfsteal_nginx_owned_config; then owned_units+=(nginx.service); fi
     if [[ -L $_selfsteal_site || -L $_selfsteal_site/index.html ||
-        ( -e $_selfsteal_site/index.html && ! -f $_selfsteal_caddyfile ) ]]; then
+        ( -e $_selfsteal_site/index.html && ${#owned_units[@]} == 0 ) ]]; then
         fail "Каталог страницы $_selfsteal_site уже используется."
         return 1
     fi
-    caddy_pid=""
-    if _selfsteal_owned_config; then
-        caddy_pid=$(systemctl show -p MainPID --value caddy.service) || return 1
-    fi
-    for port in 80 8443 2019; do
+    for service in "${owned_units[@]}"; do
+        pid=$(systemctl show -p MainPID --value "$service") || return 1
+        if [[ $pid =~ ^[1-9][0-9]*$ ]]; then own_listeners+=(-e "pid=$pid,"); fi
+    done
+    for port in "${ports[@]}"; do
         listening=$(ss -H -ltnp "sport = :$port") || return 1
         if [[ -n $listening ]] && {
-            [[ ! $caddy_pid =~ ^[1-9][0-9]*$ ]] ||
-                grep -Fv "pid=$caddy_pid," <<<"$listening" >/dev/null
+            [[ ${#own_listeners[@]} == 0 ]] ||
+                grep -Fv "${own_listeners[@]}" <<<"$listening" >/dev/null
         }; then
-            fail "TCP-порт $port нужен для Caddy и уже занят."
+            fail "TCP-порт $port для self-steal уже занят другим сервисом."
             return 1
         fi
     done
@@ -110,16 +123,18 @@ https://$domain:8443 {
 EOF_CADDY
 }
 
-selfsteal_verify() {
+_selfsteal_verify_https() {
     local domain=${NODE_DOMAIN%.}
-    _selfsteal_owned_config && systemctl is-active --quiet caddy.service || return 1
     curl --fail --silent --noproxy '*' --max-time 3 \
         --resolve "$domain:8443:127.0.0.1" "https://$domain:8443/" >/dev/null
 }
 
-selfsteal_apply() {
+_selfsteal_caddy_verify() {
+    _selfsteal_caddy_owned_config && systemctl is-active --quiet caddy.service && _selfsteal_verify_https
+}
+
+_selfsteal_caddy_apply() {
     local stage attempt
-    selfsteal_preflight || return 1
     if ! command -v caddy >/dev/null; then
         apt-get update || return 1
         DEBIAN_FRONTEND=noninteractive apt-get install -y caddy || return 1
@@ -141,7 +156,7 @@ selfsteal_apply() {
 
     info "Caddy получает сертификат для $NODE_DOMAIN через порт 80."
     for ((attempt = 0; attempt < 35; attempt++)); do
-        if selfsteal_verify; then
+        if _selfsteal_caddy_verify; then
             info "Self-steal: локальная HTTPS-страница отвечает с доверенным сертификатом."
             return 0
         fi
@@ -150,24 +165,40 @@ selfsteal_apply() {
     fail "Сертификат Caddy не готов. Проверьте DNS, доступность TCP 80 и журнал caddy.service."
 }
 
-selfsteal_restore_runtime() {
-    if _selfsteal_owned_config; then
-        systemctl enable --now caddy.service && systemctl reload caddy.service
-    elif [[ ! -e $_selfsteal_caddyfile && ! -L $_selfsteal_caddyfile ]] && command -v caddy >/dev/null; then
-        systemctl disable --now caddy.service
-    fi
+selfsteal_apply() {
+    selfsteal_preflight || return 1
+    case "$SELFSTEAL_SERVER" in
+        caddy)
+            if _selfsteal_nginx_owned_config; then nginx_selfsteal_stop || return; fi
+            _selfsteal_caddy_apply
+            ;;
+        nginx)
+            if _selfsteal_caddy_owned_config; then systemctl disable --now caddy.service || return; fi
+            nginx_selfsteal_apply
+            ;;
+        *) fail 'Выберите Caddy или Nginx.' ;;
+    esac
+}
+
+selfsteal_verify() {
+    case "$SELFSTEAL_SERVER" in
+        caddy) _selfsteal_caddy_verify ;;
+        nginx) nginx_selfsteal_verify ;;
+        *) return 1 ;;
+    esac
 }
 
 selfsteal_status() {
-    local listening
-    if ! _selfsteal_owned_config; then
+    local listening name=Caddy
+    if [[ $SELFSTEAL_SERVER == nginx ]]; then name=Nginx; fi
+    if ! _selfsteal_caddy_owned_config && ! _selfsteal_nginx_owned_config; then
         info "Self-steal: не установлен этим скриптом."
         return 0
     fi
     if selfsteal_verify; then
-        info "Self-steal: Caddy отвечает на $_selfsteal_endpoint по HTTPS."
+        info "Self-steal: $name отвечает на $_selfsteal_endpoint по HTTPS."
     else
-        warn "Self-steal: Caddy или доверенный HTTPS-сертификат для $NODE_DOMAIN недоступен."
+        warn "Self-steal: $name или доверенный сертификат для $NODE_DOMAIN недоступен."
         return 1
     fi
     listening=$(ss -H -ltnp 'sport = :443') || return 1

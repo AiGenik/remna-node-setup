@@ -40,15 +40,18 @@ detect_ssh_port() {
 }
 
 ask_secret() {
-    local answer
+    local answer prompt='  SECRET_KEY из панели → '
+    if [[ -s $NODE_SECRET ]]; then
+        prompt='  SECRET_KEY [Enter — оставить текущий] → '
+    fi
     while true; do
-        if [[ -s $NODE_SECRET ]]; then
-            printf '  SECRET_KEY из панели [Enter сохраняет текущий] → ' >&2
+        if [[ -t 0 && -t 2 ]]; then
+            answer=$(python3 "$PROJECT_DIR/lib/secret-input.py" "$UI_BOLD$prompt$UI_RESET" "$UI_CLEAR") || return
         else
-            printf '  SECRET_KEY из панели → ' >&2
+            printf '%s' "$prompt" >&2
+            IFS= read -r answer || return
+            printf '\n' >&2
         fi
-        IFS= read -rs answer || return
-        printf '\n' >&2
         answer=$(compose_value "$answer" SECRET_KEY) || return
         if [[ $answer != *[[:space:]]* && ( -n $answer || -s $NODE_SECRET ) ]]; then
             # shellcheck disable=SC2034 # Used by save_secret in common.sh.
@@ -121,6 +124,7 @@ install_wizard() {
     local scope='config network node' continue_apply detected_port
     local components='UFW, Fail2Ban'
     local old_domain='' old_panel='' old_port=2222 old_admin='' old_ssh='' old_selfsteal=no old_bbr=no old_traffic=no
+    local old_webserver=caddy
     apt_install_missing ca-certificates curl python3 iproute2 || return
     get_admin_ip || return
 
@@ -131,65 +135,55 @@ install_wizard() {
         old_ssh=$SSH_PORT
         old_admin=$ADMIN_IPS
         old_selfsteal=$ENABLE_SELFSTEAL
+        old_webserver=$SELFSTEAL_SERVER
         old_bbr=$ENABLE_BBR
         old_traffic=$ENABLE_TRAFFIC_GUARD
     fi
 
     ui_step 1 'Домен ноды'
-    info '  В кабинете хостинга найдите публичный IPv4 этого VPS.'
-    info '  У DNS-провайдера создайте A-запись и укажите в ней этот IP.'
-    info '  Пример поддомена для ноды — node.example.com.'
-    info '  Для self-steal в Cloudflare выберите режим DNS only.'
+    info '  A-запись node.example.com должна указывать на IPv4 этого VPS.'
+    info '  Для self-steal в Cloudflare выберите DNS only.'
     printf '\n'
     NODE_DOMAIN=$(wizard_input 'Поддомен ноды' "$old_domain" check_node_domain) || return
 
     ui_step 2 'Служебный порт ноды'
-    info '  В панели Remnawave откройте Ноды → Управление (Nodes → Management) → +.'
+    info '  Remnawave → Ноды → Управление → +'
     info "  В поле «Домен или IP» введите $NODE_DOMAIN."
-    info '  Возьмите номер из Node Port или скопируйте docker-compose.yml.'
-    info '  В блоке environment найдите строку NODE_PORT=2222.'
-    info '  По этому порту панель управляет нодой. Вставьте число или всю строку.'
+    info '  Вставьте Node Port или строку NODE_PORT из Compose.'
     printf '\n'
     NODE_PORT=$(wizard_input 'NODE_PORT из панели' "$old_port" check_node_port) || return
 
     ui_step 3 'Исходящий IP панели'
-    info '  Откройте SSH на сервере, где установлена панель Remnawave.'
-    info '  Посмотрите, с какого публичного IPv4 этот сервер выходит в сеть.'
+    info '  Выполните на сервере панели Remnawave'
     info '  curl -4fsS https://api.ipify.org && echo'
-    info '  Вставьте полученный IP сюда. Несколько адресов введите через пробел.'
+    info '  Вставьте полученный IP. Несколько адресов — через пробел.'
     printf '\n'
     PANEL_IPS=$(wizard_input 'IP панели' "$old_panel" check_panel_ips) || return
 
     ui_step 4 'Доступ по SSH'
     detected_port=$(detect_ssh_port "$old_ssh") || return
-    info '  Укажите порт, по которому подключились к этому VPS. Обычно это 22.'
+    info '  Enter оставит предложенный порт.'
     SSH_PORT=$(wizard_input 'SSH-порт VPS' "${detected_port:-22}" check_ssh_port "$detected_port") || return
     printf '\n'
-    info '  Доверенный IP — адрес, с которого вы подключаетесь по SSH.'
-    info '  Fail2Ban пропускает доверенные адреса.'
-    info '  TrafficGuard проверяет, что их нет в списке блокировки.'
-    if [[ -n $ADMIN_IP ]]; then
-        info "  IP текущего SSH-сеанса — $ADMIN_IP. Enter оставит показанное значение."
-    else
-        info '  Введите свой публичный IP. Для TrafficGuard он нужен обязательно.'
-    fi
+    info '  Доверенный IP — ваш адрес для SSH. Fail2Ban пропускает его.'
     ADMIN_IPS=$(wizard_input 'Доверенные IP или подсети' "${old_admin:-$ADMIN_IP}" normalize_ips network) || return
 
     ui_step 5 'Дополнительные компоненты'
     ENABLE_SELFSTEAL=$old_selfsteal
     if [[ $ENABLE_SELFSTEAL == no ]]; then
-        info '  Self-steal на Caddy — локальный HTTPS-сайт для VLESS REALITY.'
-        ENABLE_SELFSTEAL=$(yes_no '  Установить self-steal?' y) || return
+        ENABLE_SELFSTEAL=$(yes_no '  Self-steal — HTTPS для VLESS REALITY?' y) || return
+    fi
+    SELFSTEAL_SERVER=$old_webserver
+    if [[ $ENABLE_SELFSTEAL == yes ]]; then
+        SELFSTEAL_SERVER=$(select_selfsteal_server "$old_webserver") || return
     fi
     ENABLE_BBR=$old_bbr
     if [[ $ENABLE_BBR == no ]]; then
-        info '  BBR и fq — настройки передачи TCP, если их поддерживает ядро.'
-        ENABLE_BBR=$(yes_no '  Включить BBR и fq?' y) || return
+        ENABLE_BBR=$(yes_no '  BBR + fq — настройка TCP?' y) || return
     fi
     ENABLE_TRAFFIC_GUARD=$old_traffic
     if [[ $ENABLE_TRAFFIC_GUARD == no ]]; then
-        info '  TrafficGuard блокирует адреса из списка известных сканеров.'
-        ENABLE_TRAFFIC_GUARD=$(yes_no '  Включить TrafficGuard?' n) || return
+        ENABLE_TRAFFIC_GUARD=$(yes_no '  TrafficGuard — блокировка сканеров?' n) || return
     fi
     if [[ $ENABLE_TRAFFIC_GUARD == yes && -z ${ADMIN_IP:-}${ADMIN_IPS:-} ]]; then
         fail 'Для TrafficGuard укажите доверенный IP или подсеть администратора.'
@@ -204,10 +198,8 @@ install_wizard() {
     if [[ $ENABLE_BBR == yes ]]; then scope+=' bbr'; fi
 
     ui_step 6 'Ключ подключения ноды'
-    info '  Вверху карточки ноды скопируйте значение Secret Key (SECRET_KEY).'
-    info '  Можно также вставить строку SECRET_KEY из блока environment'
-    info '  в файле, который выдаёт «Скопировать docker-compose.yml».'
-    info '  Ввод скрыт. После вставки нажмите Enter.'
+    info '  Скопируйте Secret Key в карточке ноды или строку SECRET_KEY из Compose.'
+    info '  Вставьте ключ. Счётчик покажет ввод. Нажмите Enter.'
     printf '\n'
     ask_secret || return
 
@@ -216,7 +208,7 @@ install_wizard() {
         "Порт для панели  TCP $NODE_PORT" "Доступ по SSH    TCP $SSH_PORT" 'Доступ к VPN     TCP 443'
     if [[ $ENABLE_SELFSTEAL == yes ]]; then
         info '  Сертификат       TCP 80'
-        components+=', self-steal'
+        components+=", self-steal ($SELFSTEAL_SERVER)"
     fi
     if [[ $ENABLE_BBR == yes ]]; then components+=', BBR'; fi
     if [[ $ENABLE_TRAFFIC_GUARD == yes ]]; then components+=', TrafficGuard'; fi
@@ -239,6 +231,7 @@ apply_selfsteal() {
 add_selfsteal() {
     require_config || return
     ENABLE_SELFSTEAL=yes
+    SELFSTEAL_SERVER=$(select_selfsteal_server "$SELFSTEAL_SERVER" "${1-}") || return
     selfsteal_preflight && security_preflight && prepare_security || return
     run_change 'config network selfsteal' apply_selfsteal
 }
@@ -358,7 +351,7 @@ dispatch() (
     require_no_pending || return
     case "$action" in
         install) [[ $# == 1 ]] || return 2; install_wizard ;;
-        selfsteal) [[ $# == 1 ]] || return 2; add_selfsteal ;;
+        selfsteal) [[ $# -le 2 ]] || return 2; add_selfsteal "$target" ;;
         security) [[ $# == 1 ]] || return 2; configure_security ;;
         bbr) [[ $# == 1 ]] || return 2; configure_bbr ;;
         backup) [[ $# == 1 ]] || return 2; create_backup ;;

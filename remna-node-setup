@@ -19,6 +19,8 @@ source "$PROJECT_DIR/lib/release.sh"
 source "$PROJECT_DIR/lib/node.sh"
 # shellcheck source=lib/selfsteal.sh
 source "$PROJECT_DIR/lib/selfsteal.sh"
+# shellcheck source=lib/selfsteal-nginx.sh
+source "$PROJECT_DIR/lib/selfsteal-nginx.sh"
 # shellcheck source=lib/security.sh
 source "$PROJECT_DIR/lib/security.sh"
 # shellcheck source=lib/traffic-guard.sh
@@ -34,7 +36,7 @@ Remna Node Setup
 
   remna-node-setup                     Меню
   remna-node-setup install             Настроить ноду и выбранные компоненты
-  remna-node-setup selfsteal           Добавить self-steal
+  remna-node-setup selfsteal [caddy|nginx] Настроить веб-сервер для self-steal
   remna-node-setup security            Применить настройки UFW и Fail2Ban
   remna-node-setup bbr                 Включить BBR и fq
   remna-node-setup status              Статус
@@ -54,11 +56,12 @@ HELP
 self_test() {
     local name
     for name in node_apply node_verify node_restore_runtime selfsteal_apply selfsteal_verify \
-        selfsteal_restore_runtime security_apply security_preflight bbr_apply traffic_guard_apply \
+        nginx_selfsteal_apply nginx_selfsteal_stop security_apply security_preflight bbr_apply traffic_guard_apply \
         traffic_guard_capture_runtime traffic_guard_restore_before_ufw traffic_guard_restore_after_ufw \
         release_update release_rollback release_acquire_lock install_wizard restore_snapshot; do
         declare -F "$name" >/dev/null || { fail "Не загружен модуль $name."; return 1; }
     done
+    [[ -r $PROJECT_DIR/lib/secret-input.py ]] || { fail 'Модуль ввода ключа отсутствует.'; return 1; }
     jq -e 'type == "object" and (.version | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")) and
            (.node_image | test("^remnawave/node:[^@]+@sha256:[a-f0-9]{64}$")) and
            (.traffic_guard_version | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")) and

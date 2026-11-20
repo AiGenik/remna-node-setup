@@ -3,6 +3,9 @@
 SNAPSHOT_CONFIG=("$CONFIG_DIR/node.json" "$NODE_SECRET")
 SNAPSHOT_NODE=("$NODE_DIR/compose.yaml" /etc/logrotate.d/remna-node-setup /etc/logrotate.d/remna-node-setup-node)
 SNAPSHOT_CADDY=(/etc/caddy/Caddyfile /var/www/remna-node-setup/index.html)
+SNAPSHOT_NGINX=(/etc/nginx/conf.d/remna-node-setup.conf
+    /etc/systemd/system/remna-node-setup-certbot.service /etc/systemd/system/remna-node-setup-certbot.timer)
+SELFSTEAL_UNITS=(caddy.service nginx.service remna-node-setup-certbot.timer)
 SNAPSHOT_NETWORK=(/etc/ufw /etc/default/ufw /etc/fail2ban/jail.d/remna-node-setup.local
     /etc/ipset.conf /etc/systemd/system/antiscan-ipset-restore.service
     /etc/systemd/system/antiscan-move-rules.service "$STATE_DIR/traffic-guard")
@@ -53,9 +56,11 @@ capture_snapshot() {
     if has_scope "$scope" config; then path_snapshot "$dir" "${SNAPSHOT_CONFIG[@]}" || return; fi
     if has_scope "$scope" node; then path_snapshot "$dir" "${SNAPSHOT_NODE[@]}" || return; fi
     if has_scope "$scope" selfsteal; then
-        path_snapshot "$dir" "${SNAPSHOT_CADDY[@]}" || return
-        active caddy.service > "$dir/caddy.active" || return
-        enabled caddy.service > "$dir/caddy.enabled" || return
+        path_snapshot "$dir" "${SNAPSHOT_CADDY[@]}" "${SNAPSHOT_NGINX[@]}" || return
+        for unit in "${SELFSTEAL_UNITS[@]}"; do
+            active "$unit" > "$dir/${unit%.*}.active" || return
+            enabled "$unit" > "$dir/${unit%.*}.enabled" || return
+        done
     fi
     if has_scope "$scope" bbr; then
         path_snapshot "$dir" "${SNAPSHOT_BBR[@]}" || return
@@ -104,6 +109,50 @@ restore_step() {
     return 1
 }
 
+restore_selfsteal_files() {
+    local dir=$1 unit name keep_active keep_enabled errors=0 restore_nginx=no
+    if [[ -r $dir/nginx.active ]] || _selfsteal_nginx_owned_config; then
+        restore_nginx=yes
+        for unit in remna-node-setup-certbot.timer remna-node-setup-certbot.service; do
+            if [[ $(active "$unit") == yes ]]; then systemctl stop "$unit" || errors=1; fi
+        done
+    fi
+    for unit in "${SELFSTEAL_UNITS[@]}"; do
+        name=${unit%.*}
+        keep_active=no
+        keep_enabled=no
+        if [[ -r $dir/$name.active ]]; then
+            keep_active=$(< "$dir/$name.active")
+            keep_enabled=$(< "$dir/$name.enabled")
+        elif [[ $restore_nginx != yes || $unit == caddy.service ]]; then
+            continue
+        fi
+        if [[ $keep_active != yes && $(active "$unit") == yes ]]; then
+            systemctl stop "$unit" || errors=1
+        fi
+        if [[ $keep_enabled != yes && $(enabled "$unit") == yes ]]; then
+            systemctl disable "$unit" || errors=1
+        fi
+    done
+    path_restore "$dir" "${SNAPSHOT_CADDY[@]}" || errors=1
+    if [[ $restore_nginx == yes ]]; then
+        path_restore "$dir" "${SNAPSHOT_NGINX[@]}" || errors=1
+        systemctl daemon-reload || errors=1
+    fi
+    return "$errors"
+}
+
+restore_selfsteal_runtime() {
+    local dir=$1 unit name errors=0
+    for unit in "${SELFSTEAL_UNITS[@]}"; do
+        name=${unit%.*}
+        if [[ -r $dir/$name.active ]]; then
+            restore_service "$unit" "$(< "$dir/$name.active")" "$(< "$dir/$name.enabled")" || errors=1
+        fi
+    done
+    return "$errors"
+}
+
 restore_network() {
     local dir=$1 unit errors=0
     if [[ $(active fail2ban.service) == yes ]]; then systemctl stop fail2ban.service || errors=1; fi
@@ -144,14 +193,11 @@ restore_snapshot() {
         if [[ ! -f $NODE_DIR/compose.yaml ]]; then node_restore_runtime || errors=1; fi
     fi
     if has_scope "$scope" selfsteal; then
-        path_restore "$dir" "${SNAPSHOT_CADDY[@]}" || errors=1
-        if [[ $(< "$dir/caddy.active") != yes ]]; then
-            restore_service caddy.service no "$(< "$dir/caddy.enabled")" || errors=1
-        fi
+        restore_step 'конфигурацию self-steal' restore_selfsteal_files "$dir" || errors=1
     fi
     if has_scope "$scope" network; then restore_step 'сетевые правила' restore_network "$dir" || errors=1; fi
-    if has_scope "$scope" selfsteal && [[ $(< "$dir/caddy.active") == yes ]]; then
-        restore_service caddy.service yes "$(< "$dir/caddy.enabled")" || errors=1
+    if has_scope "$scope" selfsteal; then
+        restore_step 'сервисы self-steal' restore_selfsteal_runtime "$dir" || errors=1
     fi
     if has_scope "$scope" node && [[ -f $NODE_DIR/compose.yaml ]]; then
         restore_step 'контейнер ноды' node_restore_runtime || errors=1
