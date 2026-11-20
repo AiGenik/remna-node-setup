@@ -50,7 +50,8 @@ Remna Node Setup
   remna-node-setup restore ID          Восстановить снимок
   remna-node-setup update tool [vX.Y.Z] Обновить скрипт с GitHub
   remna-node-setup update node          Обновить ноду из манифеста скрипта
-  remna-node-setup update traffic-guard Применить версию и список из манифеста
+  remna-node-setup update packages [пакет] Обновить установленные пакеты через APT
+  remna-node-setup update traffic-guard Обновить TrafficGuard и список сканеров
   remna-node-setup rollback tool        Вернуть предыдущую версию скрипта
   remna-node-setup rollback            Отменить ожидающее подтверждения изменение
   remna-node-setup confirm             Подтвердить из нового SSH-сеанса
@@ -61,7 +62,8 @@ self_test() {
     local name
     for name in node_apply node_verify node_restore_runtime selfsteal_apply selfsteal_verify \
         nginx_selfsteal_apply nginx_selfsteal_stop security_apply security_preflight security_detect_vpn_ports \
-        security_prompt_vpn_ports security_vpn_status security_os_updates_status bbr_apply traffic_guard_apply \
+        apt_install_current apt_upgrade_installed_preview apt_upgrade_installed_apply \
+        security_prompt_vpn_ports security_vpn_status security_os_updates_status bbr_apply traffic_guard_prepare traffic_guard_apply \
         traffic_guard_capture_runtime traffic_guard_restore_before_ufw traffic_guard_restore_after_ufw \
         release_update release_rollback release_acquire_lock install_wizard restore_snapshot \
         load_host_settings standalone_selfsteal standalone_security standalone_bbr standalone_traffic_guard; do
@@ -70,11 +72,7 @@ self_test() {
     [[ -r $PROJECT_DIR/lib/secret-input.py ]] || { fail 'Модуль ввода ключа отсутствует.'; return 1; }
     [[ -r $PROJECT_DIR/lib/selfsteal-dns.py ]] || { fail 'Модуль проверки DNS отсутствует.'; return 1; }
     jq -e 'type == "object" and (.version | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")) and
-           (.node_image | test("^remnawave/node:[^@]+@sha256:[a-f0-9]{64}$")) and
-           (.traffic_guard_version | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")) and
-           (.traffic_guard_list_url | startswith("https://")) and
-           ([.traffic_guard_amd64_sha256, .traffic_guard_arm64_sha256, .traffic_guard_list_sha256] |
-            all(test("^[a-f0-9]{64}$")))' "$PROJECT_DIR/versions.json" >/dev/null
+           (.node_image | test("^remnawave/node:[^@]+@sha256:[a-f0-9]{64}$"))' "$PROJECT_DIR/versions.json" >/dev/null
 }
 
 case "${1-}" in

@@ -8,6 +8,7 @@ ui_init() {
     UI_BOLD=
     UI_MUTED=
     UI_WARN=
+    UI_DANGER=
     UI_RESET=
     UI_VERSION=$(version_get version) || return
     if [[ -t 0 && -t 1 && -t 2 ]]; then
@@ -21,6 +22,7 @@ ui_init() {
                 UI_OK=$'\033[1;92m'
                 UI_MUTED=$'\033[2m'
                 UI_WARN=$'\033[1;93m'
+                UI_DANGER=$'\033[1;91m'
             fi
         fi
     fi
@@ -62,6 +64,23 @@ ui_screen() {
 
 ui_section() {
     printf '  %s%s%s\n' "${UI_ACCENT:-$UI_BOLD}" "$1" "$UI_RESET"
+}
+
+ui_attention() {
+    printf '  %s%s%s\n' "${UI_DANGER:-${UI_BOLD:-}}" "$1" "${UI_RESET:-}"
+}
+
+ui_network_confirmation() {
+    local remaining
+    remaining=$(network_rollback_remaining) || remaining=
+    ui_attention '● Сеть ждёт подтверждения SSH'
+    ui_attention 'Оставьте этот сеанс открытым. Подключитесь по SSH в новом.'
+    ui_attention 'Выполните sudo remna-node-setup confirm или [6] → [3].'
+    case "$remaining" in
+        '') ui_attention 'Без подтверждения настройки откатятся автоматически.' ;;
+        0) ui_attention 'Срок подтверждения истёк. Проверьте состояние сети.' ;;
+        *) ui_attention "Автооткат через $((remaining / 60)) мин $((remaining % 60)) с." ;;
+    esac
 }
 
 ui_progress_bar() {
@@ -168,8 +187,7 @@ ui_menu_status() (
         printf '  %s%s  %s%s\n' "$UI_MUTED" "$mark" "$configured" "$UI_RESET"
     fi
     if [[ -s ${PENDING_FILE:-} ]]; then
-        printf '  %s● Сеть ждёт подтверждения SSH%s\n' "${UI_WARN:-$UI_BOLD}" "$UI_RESET"
-        if [[ $page == main ]]; then printf '    С нового SSH-сеанса → [6] → [3]\n'; fi
+        ui_network_confirmation
     fi
     if [[ $page == main || -s ${PENDING_FILE:-} ]]; then printf '\n'; fi
 )
@@ -238,6 +256,8 @@ MENU_ACTIONS=(
     'updates|1|Обновить скрипт|Установить последний релиз с GitHub|update tool'
     'updates|2|Обновить ноду|Применить образ из текущего релиза|update node'
     'updates|3|Откатить версию скрипта|Вернуться к предыдущему релизу|rollback tool'
+    'updates|4|Обновить системные пакеты|Nginx, Caddy, Certbot, UFW, Fail2Ban и Docker|update packages'
+    'updates|5|Обновить TrafficGuard и список сканеров|Стабильная версия и база из официальных репозиториев|update traffic-guard'
 )
 
 show_menu() {

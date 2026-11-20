@@ -98,7 +98,7 @@ _standalone_access() {
 }
 
 _standalone_apply_security() {
-    ui_run 'UFW и Fail2Ban' security_apply && _standalone_save
+    ui_run 'Пакеты и правила UFW / Fail2Ban' security_apply_current && _standalone_save
 }
 
 standalone_security() {
@@ -137,7 +137,7 @@ standalone_bbr() {
 }
 
 _standalone_apply_traffic_guard() {
-    ui_run 'Список TrafficGuard' traffic_guard_apply && _standalone_save
+    ui_run 'Применение базы TrafficGuard' traffic_guard_apply "$1" && _standalone_save
 }
 
 standalone_traffic_guard() {
@@ -156,10 +156,10 @@ standalone_traffic_guard() {
         return 1
     fi
     ADMIN_IPS=${ADMIN_IPS:-$ADMIN_IP}
-    consent=$(yes_no 'Применить список известных сканеров?' n) || return
+    consent=$(yes_no 'Проверить и применить свежую версию и базу TrafficGuard?' n) || return
     [[ $consent == yes ]] || return 0
     ENABLE_TRAFFIC_GUARD=yes
-    run_change 'config network' _standalone_apply_traffic_guard
+    prepare_and_change_traffic_guard _standalone_apply_traffic_guard
 }
 
 _standalone_apply_selfsteal() {

@@ -140,7 +140,7 @@ _selfsteal_caddy_activate_config() {
 
 _selfsteal_caddy_apply() {
     local attempt
-    apt_install_missing caddy || return 1
+    apt_install_current caddy || return 1
     install -d -m 0755 /etc/caddy "$_selfsteal_site" || return 1
     if [[ ! -f $_selfsteal_site/index.html ]]; then
         install -m 0644 "$PROJECT_DIR/templates/index.html" "$_selfsteal_site/index.html" || return 1

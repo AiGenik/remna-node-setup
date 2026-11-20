@@ -14,7 +14,7 @@ require_config() {
 
 require_no_pending() {
     if [[ -n $(pending_id) ]]; then
-        fail 'Сначала подтвердите или отмените предыдущие сетевые изменения.'
+        ui_network_confirmation
         return 1
     fi
 }
@@ -137,10 +137,10 @@ show_panel_help() {
 }
 
 apply_installation() {
-    local mode=$1
+    local mode=$1 traffic_stage=$2
     save_config && save_secret || return
     if [[ $mode == full ]]; then
-        ui_install_phase security_apply || return
+        ui_install_phase security_apply_current || return
     fi
     ui_install_phase node_apply || return
     if [[ $mode == full ]]; then
@@ -151,12 +151,22 @@ apply_installation() {
             ui_install_phase bbr_apply || return
         fi
         if [[ $ENABLE_TRAFFIC_GUARD == yes ]]; then
-            ui_install_phase traffic_guard_apply || return
+            ui_install_phase traffic_guard_apply "$traffic_stage" || return
         fi
     fi
     rm -f -- "$CONFIG_DIR/host.json" || return
     ui_install_progress "$UI_PROGRESS_DONE"
 }
+
+apply_selected_installation() (
+    local scope=$1 mode=$2 traffic_stage=''
+    if [[ $mode == full && $ENABLE_TRAFFIC_GUARD == yes ]]; then
+        traffic_stage=$(mktemp -d "$STATE_DIR/.traffic-guard.XXXXXX") || return
+        trap 'rm -rf -- "$traffic_stage"' EXIT
+        ui_install_phase traffic_guard_prepare "$traffic_stage" || return
+    fi
+    run_change "$scope" apply_installation "$mode" "$traffic_stage"
+)
 
 wizard_selfsteal_preflight() {
     local previous=$1 choice
@@ -201,9 +211,7 @@ install_wizard() {
         steps=5
         scope+=' network'
         UI_INSTALL_TITLE='Установка ноды и компонентов'
-        UI_INSTALL_PHASES+=('Пакеты защиты' 'UFW и Fail2Ban')
     fi
-    UI_INSTALL_PHASES+=('Контейнер Remnawave')
     ui_run 'Подготовка VPS' apt_install_missing ca-certificates curl python3 iproute2 || return
 
     if load_config; then
@@ -282,6 +290,9 @@ install_wizard() {
             if (( result == 2 )); then return 0; fi
             if (( result != 0 )); then return "$result"; fi
         fi
+        UI_INSTALL_PHASES+=('Пакеты защиты')
+        if [[ $ENABLE_TRAFFIC_GUARD == yes ]]; then UI_INSTALL_PHASES+=('Проверка версии и базы TrafficGuard'); fi
+        UI_INSTALL_PHASES+=('UFW и Fail2Ban' 'Контейнер Remnawave')
         if [[ $ENABLE_SELFSTEAL == yes ]]; then
             scope+=' selfsteal'
             components+=", $SELFSTEAL_SERVER"
@@ -294,8 +305,10 @@ install_wizard() {
         fi
         if [[ $ENABLE_TRAFFIC_GUARD == yes ]]; then
             components+=', TrafficGuard'
-            UI_INSTALL_PHASES+=('TrafficGuard')
+            UI_INSTALL_PHASES+=('Применение базы TrafficGuard')
         fi
+    else
+        UI_INSTALL_PHASES+=('Контейнер Remnawave')
     fi
 
     node_preflight || return
@@ -317,9 +330,10 @@ install_wizard() {
     if [[ $UI_CLEAR != yes ]]; then ui_screen "$UI_INSTALL_TITLE"; fi
     ui_install_phase node_prepare_image || return
     if [[ $mode == full ]]; then ui_install_phase prepare_security || return; fi
-    run_change "$scope" apply_installation "$mode" || return
+    apply_selected_installation "$scope" "$mode" || return
     printf '\n'
     ui_section 'Установка завершена'
+    if [[ $mode == full && $ENABLE_TRAFFIC_GUARD == yes ]]; then traffic_guard_status; fi
     show_panel_help
 }
 
@@ -351,7 +365,7 @@ add_selfsteal() {
 }
 
 apply_security_settings() {
-    save_config && ui_run 'UFW и Fail2Ban' security_apply || return
+    save_config && ui_run 'Пакеты и правила UFW / Fail2Ban' security_apply_current || return
     if [[ $1 == yes ]]; then ui_run 'Обновление HTTPS-перенаправления' selfsteal_refresh_redirect || return; fi
 }
 
@@ -394,18 +408,98 @@ configure_bbr() {
 }
 
 apply_traffic_guard() {
-    save_config && ui_run 'Список TrafficGuard' traffic_guard_apply
+    save_config && ui_run 'Применение базы TrafficGuard' traffic_guard_apply "$1"
 }
+
+prepare_and_change_traffic_guard() (
+    local callback=$1 stage
+    stage=$(mktemp -d "$STATE_DIR/.traffic-guard.XXXXXX") || return
+    trap 'rm -rf -- "$stage"' EXIT
+    ui_run 'Проверка версии и базы TrafficGuard' traffic_guard_prepare "$stage" || return
+    run_change 'config network' "$callback" "$stage" || return
+    traffic_guard_status
+)
 
 configure_traffic_guard() {
     local consent
     require_config || return
     [[ -n ${ADMIN_IP:-}${ADMIN_IPS:-} ]] || { fail 'Укажите доверенный адрес при запуске мастера.'; return 1; }
     security_ufw_active || { fail 'Сначала включите UFW через пункт «Защита».'; return 1; }
-    consent=$(yes_no 'Применить список блокировки известных сканеров из текущего релиза?' n) || return
+    consent=$(yes_no 'Проверить и применить свежую версию и базу TrafficGuard?' n) || return
     [[ $consent == yes ]] || return 0
     ENABLE_TRAFFIC_GUARD=yes
-    run_change 'config network' apply_traffic_guard
+    prepare_and_change_traffic_guard apply_traffic_guard
+}
+
+apply_system_package_updates() {
+    local plan=$1 ufw_active=no guard_active=no restart_nginx=no restart_caddy=no
+    local service
+    local -a check_services=()
+    if security_ufw_active; then ufw_active=yes; fi
+    if [[ -s $STATE_DIR/traffic-guard/version ]] && traffic_guard_firewall_active; then guard_active=yes; fi
+    if grep -Eq '^(nginx|nginx-[a-z]+|libnginx-mod-[a-z0-9-]+)[[:space:]]' <<< "$plan" &&
+        systemctl is-active --quiet nginx.service; then
+        nginx -t || return
+        restart_nginx=yes
+    fi
+    if grep -q $'^caddy\t' <<< "$plan" && systemctl is-active --quiet caddy.service; then restart_caddy=yes; fi
+    if grep -q $'^fail2ban\t' <<< "$plan" && systemctl is-active --quiet fail2ban.service; then
+        check_services+=(fail2ban.service)
+    fi
+    if grep -Eq '^(docker-ce|docker.io|containerd.io|containerd)[[:space:]]' <<< "$plan" &&
+        systemctl is-active --quiet docker.service; then
+        check_services+=(docker.service)
+    fi
+
+    apt_upgrade_installed_apply "$plan" || return
+    if [[ $ufw_active == yes ]] && ! security_ufw_active; then
+        fail 'После обновления UFW неактивен.'
+        return 1
+    fi
+    security_restore_traffic_guard "$guard_active" || return
+    if [[ $restart_nginx == yes ]]; then
+        nginx -t && systemctl restart nginx.service && systemctl is-active --quiet nginx.service || return
+    fi
+    if [[ $restart_caddy == yes ]]; then
+        systemctl restart caddy.service && systemctl is-active --quiet caddy.service || return
+    fi
+    for service in "${check_services[@]}"; do
+        if ! systemctl is-active --quiet "$service"; then
+            fail "После обновления служба $service не запущена."
+            return 1
+        fi
+    done
+}
+
+update_system_packages() {
+    local selected=$1 plan consent
+    local -a packages=(nginx nginx-common nginx-core nginx-full nginx-light nginx-extras libnginx-mod-stream
+        caddy certbot python3-certbot python3-acme ufw fail2ban python3-systemd ipset iptables
+        docker-ce docker-ce-cli docker-buildx-plugin docker-compose-plugin containerd.io docker.io docker-compose-v2 containerd)
+    if [[ -n $selected ]]; then
+        if [[ " ${packages[*]} " != *" $selected "* ]]; then
+            fail "Пакет $selected не входит в список поддерживаемых компонентов."
+            return 1
+        fi
+        packages=("$selected")
+    fi
+    plan=$(apt_upgrade_installed_preview "${packages[@]}") || return
+    if [[ -z $plan ]]; then
+        info 'Нет доступных обновлений выбранных установленных пакетов.'
+        return 0
+    fi
+    awk -F '\t' '{printf "  %-23s %s → %s\n", $1, $2, $3}' <<< "$plan"
+    ui_attention 'Обновление может перезапустить службы и прервать подключения.'
+    if [[ $UI_INTERACTIVE == yes ]]; then
+        consent=$(yes_no '  Установить эти обновления?' n) || return
+        [[ $consent == yes ]] || return 0
+    fi
+    if security_ufw_active && grep -Eq '^(ufw|ipset|iptables)[[:space:]]' <<< "$plan"; then
+        run_change network ui_run 'Обновление установленных пакетов' apply_system_package_updates "$plan" || return
+    else
+        ui_run 'Обновление установленных пакетов' apply_system_package_updates "$plan" || return
+    fi
+    info 'Обновление пакетов завершено.'
 }
 
 update_node() {
@@ -451,7 +545,7 @@ do_restore() {
 status_all() {
     local id
     id=$(pending_id) || return
-    if [[ -n $id ]]; then info "Ожидается подтверждение SSH. Снимок $id."; fi
+    if [[ -n $id ]]; then ui_network_confirmation; fi
     if ! load_config && ! load_host_settings; then
         node_status || :
         info 'Начните с мастера или выберите отдельный компонент.'
@@ -546,6 +640,7 @@ dispatch() (
             case "$target" in
                 tool) [[ $# -le 3 ]] || return 2; release_update "${3-}" ;;
                 node) [[ $# == 2 ]] || return 2; update_node ;;
+                packages) [[ $# -le 3 ]] || return 2; update_system_packages "${3-}" ;;
                 traffic-guard)
                     [[ $# == 2 ]] || return 2
                     if [[ -e $CONFIG_DIR/node.json ]]; then configure_traffic_guard; else standalone_traffic_guard; fi

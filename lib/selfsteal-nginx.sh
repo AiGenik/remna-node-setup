@@ -170,8 +170,14 @@ nginx_selfsteal_verify() {
 }
 
 nginx_selfsteal_apply() {
-    local domain=${NODE_DOMAIN%.} attempt
-    nginx_selfsteal_preflight && apt_install_missing nginx certbot || return 1
+    local domain=${NODE_DOMAIN%.} attempt version_before version_after old_pid=''
+    nginx_selfsteal_preflight || return
+    if systemctl is-active --quiet nginx.service; then
+        old_pid=$(systemctl show -p MainPID --value nginx.service) || return
+    fi
+    version_before=$(apt_installed_version nginx) || return
+    apt_install_current nginx certbot || return 1
+    version_after=$(apt_installed_version nginx) || return
     install -d -m 0755 /etc/nginx/conf.d "$_selfsteal_site/.well-known/acme-challenge" || return 1
     if [[ ! -f $_selfsteal_site/index.html ]]; then
         install -m 0644 "$PROJECT_DIR/templates/index.html" "$_selfsteal_site/index.html" || return 1
@@ -187,6 +193,10 @@ nginx_selfsteal_apply() {
         --agree-tos --register-unsafely-without-email --keep-until-expiring || return 1
 
     _nginx_selfsteal_activate_config tls || return 1
+    if [[ -n $old_pid && $version_before != "$version_after" &&
+          $old_pid == "$(systemctl show -p MainPID --value nginx.service)" ]]; then
+        systemctl restart nginx.service || return 1
+    fi
     for ((attempt = 0; attempt < 5; attempt++)); do
         if nginx_selfsteal_verify; then
             _nginx_selfsteal_enable_renewal || return 1

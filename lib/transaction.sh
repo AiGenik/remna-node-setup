@@ -238,11 +238,31 @@ UNIT
 Description=Revert unconfirmed Remna Node Setup network configuration
 [Timer]
 OnActiveSec=10min
+AccuracySec=1s
 Unit=$ROLLBACK_UNIT.service
 [Install]
 WantedBy=timers.target
 UNIT
     systemctl daemon-reload && systemctl enable --now "$ROLLBACK_UNIT.timer"
+}
+
+network_rollback_remaining() {
+    local unit path deadline now
+    local path_pattern='^o "(/org/freedesktop/systemd1/unit/[A-Za-z0-9_]+)"$'
+    unit=$(busctl --system --timeout=2s call org.freedesktop.systemd1 /org/freedesktop/systemd1 \
+        org.freedesktop.systemd1.Manager GetUnit s "$ROLLBACK_UNIT.timer" 2>/dev/null) || return
+    [[ $unit =~ $path_pattern ]] || return 1
+    path=${BASH_REMATCH[1]}
+    deadline=$(busctl --system --timeout=2s get-property org.freedesktop.systemd1 "$path" \
+        org.freedesktop.systemd1.Timer NextElapseUSecMonotonic 2>/dev/null) || return
+    [[ $deadline =~ ^t\ (0|[1-9][0-9]{0,17})$ ]] || return 1
+    deadline=${BASH_REMATCH[1]}
+    now=$(python3 -c 'import time; print(time.monotonic_ns() // 1000)' 2>/dev/null) || return
+    if (( deadline > now )); then
+        printf '%s\n' "$(((deadline - now + 999999) / 1000000))"
+    else
+        printf '0\n'
+    fi
 }
 
 disarm_rollback() {
@@ -314,6 +334,6 @@ run_change() (
     "$@" || return
     committed=yes
     if has_scope "$scope" network; then
-        info 'Проверьте новый SSH-сеанс и выполните sudo remna-node-setup confirm. Без подтверждения сработает откат через 10 минут после начала операции.'
+        ui_network_confirmation
     fi
 )

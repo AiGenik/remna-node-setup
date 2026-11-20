@@ -8,16 +8,20 @@ source "$PROJECT_DIR/lib/common.sh"
 source "$PROJECT_DIR/lib/ui.sh"
 # shellcheck source=lib/security.sh
 source "$PROJECT_DIR/lib/security.sh"
+# shellcheck source=lib/manager.sh
+source "$PROJECT_DIR/lib/manager.sh"
 # shellcheck source=lib/standalone.sh
 source "$PROJECT_DIR/lib/standalone.sh"
 
 CONFIG_DIR=$(mktemp -d)
+STATE_DIR=$CONFIG_DIR
 trap 'rm -rf -- "$CONFIG_DIR"' EXIT
 UI_INTERACTIVE=no
 UFW_MODE=inactive
 SKIP_APPLY=no
 
 apt_install_missing() { :; }
+apt_install_current() { :; }
 prepare_security() { :; }
 get_admin_ip() { ADMIN_IP=192.0.2.7; }
 detect_ssh_port() { printf '2202\n'; }
@@ -26,7 +30,9 @@ select_selfsteal_server() { printf '%s\n' "${2:-$1}"; }
 selfsteal_preflight() { :; }
 selfsteal_apply() { :; }
 bbr_apply() { :; }
-traffic_guard_apply() { :; }
+traffic_guard_prepare() { [[ -d $1 ]]; }
+traffic_guard_apply() { [[ -d $1 ]]; }
+traffic_guard_status() { :; }
 security_install_sshd_jail() { :; }
 
 sysctl() {
@@ -106,3 +112,5 @@ cmp -s "$CONFIG_DIR/before.json" "$CONFIG_DIR/host.json"
 
 printf '%s\n' 'Standalone-компоненты, настройки и области отката проверены.'
 "$PROJECT_DIR/tests/vpn-ports.sh"
+"$PROJECT_DIR/tests/apt-packages.sh"
+"$PROJECT_DIR/tests/traffic-guard-updates.sh"

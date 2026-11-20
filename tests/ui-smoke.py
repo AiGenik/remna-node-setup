@@ -43,7 +43,7 @@ node_prepare_image() {
 }
 node_apply() { :; }
 prepare_security() { [[ $EXPECTED_MODE == full ]]; }
-security_apply() { [[ $EXPECTED_MODE == full ]]; }
+security_apply_current() { [[ $EXPECTED_MODE == full ]]; }
 selfsteal_apply() { [[ $EXPECTED_MODE == full ]]; }
 run_change() {
     local scope=$1
@@ -68,7 +68,9 @@ dispatch() {
         status) printf 'TEST-NODE-STATUS\n' ;;
     esac
 }
-PENDING_FILE=/dev/null
+PENDING_FILE=$CONFIG_DIR/pending
+if [[ ${TEST_PENDING:-no} == yes ]]; then printf 'test\n' > "$PENDING_FILE"; fi
+network_rollback_remaining() { printf '123\n'; }
 NODE_SECRET=$CONFIG_DIR/node.secret
 ui_init
 "$1"
@@ -76,11 +78,12 @@ ui_init
 
 
 class Terminal:
-    def __init__(self, mode="full", fail_image=False, rows=24, columns=80):
+    def __init__(self, mode="full", fail_image=False, rows=24, columns=80, pending=False):
         self.mode = mode
         self.fail_image = fail_image
         self.rows = rows
         self.columns = columns
+        self.pending = pending
 
     def __enter__(self):
         self.fd, slave = pty.openpty()
@@ -89,7 +92,8 @@ class Terminal:
         self.process = subprocess.Popen(
             ["bash", "-c", FIXTURE, "ui-test", "show_menu"],
             cwd=ROOT, env={**ENV, "EXPECTED_WEBSERVER": "nginx", "EXPECTED_MODE": self.mode,
-                           "FAIL_IMAGE": "yes" if self.fail_image else "no"},
+                           "FAIL_IMAGE": "yes" if self.fail_image else "no",
+                           "TEST_PENDING": "yes" if self.pending else "no"},
             stdin=slave, stdout=slave, stderr=slave,
         )
         os.close(slave)
@@ -263,4 +267,12 @@ with Terminal(rows=18, columns=42) as terminal:
     terminal.enter("0")
     assert terminal.process.wait(timeout=5) == 0
 
-print("Проверены меню, скрытый ввод, TCP/UDP и прогресс установки при успехе и ошибке.")
+with Terminal(pending=True) as terminal:
+    screen = terminal.expect("Номер пункта →")
+    assert "\x1b[1;91m● Сеть ждёт подтверждения SSH".encode() in screen
+    visible = without_ansi(screen)
+    assert "sudo remna-node-setup confirm" in visible and "Автооткат через 2 мин 3 с." in visible
+    terminal.enter("0")
+    assert terminal.process.wait(timeout=5) == 0
+
+print("Проверены мастер, прогресс, скрытый ввод и красное предупреждение об автооткате.")

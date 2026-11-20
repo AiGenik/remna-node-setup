@@ -129,7 +129,7 @@ Architectures: $architecture
 Signed-By: $_node_apt_key
 EOF_APT
     chmod 0644 "$_node_apt_source" || return 1
-    apt_install_missing docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin ||
+    apt_install_current docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin ||
         return 1
     systemctl enable --now docker.service || return 1
     _node_docker compose version >/dev/null

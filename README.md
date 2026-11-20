@@ -6,10 +6,10 @@
 
 Приготовьте адрес новой ноды, `NODE_PORT` и `SECRET_KEY` из панели. Для настройки защиты также нужны исходящий IP панели и порты профиля Xray.
 
-На VPS выполните команду для релиза 0.3.0.
+На VPS выполните команду для релиза 0.4.0.
 
 ```bash
-f=$(mktemp) && curl -fsSL https://raw.githubusercontent.com/AiGenik/remna-node-setup/v0.3.0/install.sh -o "$f" && sudo bash "$f" AiGenik/remna-node-setup v0.3.0 && rm -f "$f" && sudo remna-node-setup
+f=$(mktemp) && curl -fsSL https://raw.githubusercontent.com/AiGenik/remna-node-setup/v0.4.0/install.sh -o "$f" && sudo bash "$f" AiGenik/remna-node-setup v0.4.0 && rm -f "$f" && sudo remna-node-setup
 ```
 
 Для установки из локальной папки с исходниками используйте следующие команды.
@@ -22,6 +22,8 @@ sudo remna-node-setup
 В меню выберите «Только нода» или «Нода и компоненты». После сетевых изменений откройте новое SSH-подключение и выполните `sudo remna-node-setup confirm`. До подтверждения действует таймер отката на 10 минут.
 
 В разделе «Порты и защита» можно отдельно настроить входящие TCP/UDP-порты, self-steal, UFW с Fail2Ban, BBR и TrafficGuard. Диагностика проверяет DNS, слушающие порты Xray и разрешения UFW.
+
+В разделе «Обновления» доступны обновление установленных пакетов Nginx, Caddy, Certbot, UFW, Fail2Ban и Docker, а также обновление TrafficGuard и базы сканеров.
 
 - [Установка и подключение к панели](docs/Установка.md)
 - [Обновление, резервные копии и восстановление](docs/Эксплуатация.md)

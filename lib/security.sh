@@ -273,6 +273,24 @@ security_apply() {
     info "UFW включён. Fail2Ban защищает SSH на порту $SSH_PORT."
 }
 
+security_restore_traffic_guard() {
+    if [[ $1 == yes ]] && ! traffic_guard_firewall_active; then
+        if ! systemctl restart antiscan-move-rules.service || ! traffic_guard_firewall_active; then
+            fail 'После обновления не удалось восстановить фильтр TrafficGuard.'
+            return 1
+        fi
+    fi
+}
+
+security_apply_current() {
+    local guard_was_active=no
+    if [[ -s $STATE_DIR/traffic-guard/version ]] && traffic_guard_firewall_active; then
+        guard_was_active=yes
+    fi
+    apt_install_current ufw fail2ban python3-systemd ipset iptables &&
+        security_apply && security_restore_traffic_guard "$guard_was_active"
+}
+
 security_vpn_status() {
     local detected configured rules result=0 entry port protocol
     local -a entries=()

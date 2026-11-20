@@ -1,9 +1,4 @@
 {
-  "version": "0.3.0",
-  "node_image": "remnawave/node:3.4.6@sha256:3d5fde656a36920f53c5c080f2dc821df8318f453803b07c4e5242752a549d69",
-  "traffic_guard_version": "0.0.5",
-  "traffic_guard_amd64_sha256": "1bd3ab5dd07bba19301e7b2c88630da3ddc7ce6e66deb24c4f1f11d756eb152e",
-  "traffic_guard_arm64_sha256": "6eb16250a3fe354ec222107fb17d14ac98c9c5199649c13f67953971995b270e",
-  "traffic_guard_list_url": "https://raw.githubusercontent.com/shadow-netlab/traffic-guard-lists/7b9623238d7420cbb31feaa149610738feb45fd5/public/antiscanner.list",
-  "traffic_guard_list_sha256": "807bf9cfc91dc621cceaa7880747ef2bb342a726543ee62bd29eab120344ef29"
+  "version": "0.4.0",
+  "node_image": "remnawave/node:3.4.6@sha256:3d5fde656a36920f53c5c080f2dc821df8318f453803b07c4e5242752a549d69"
 }
