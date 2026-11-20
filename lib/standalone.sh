@@ -11,16 +11,19 @@ load_host_settings() {
         and (.node_domain | type) == "string"
         and (.admin_ips | type) == "string"
         and ((.ssh_port == null) or (.ssh_port | type) == "number")
+        and ((.security // "yes") == "yes" or .security == "no")
+        and ((.vpn_ports // "") | type) == "string"
         and (.selfsteal_server == "caddy" or .selfsteal_server == "nginx")
         and ([.selfsteal, .bbr, .traffic_guard] | all(. == "yes" or . == "no"))
-      then [.node_domain, (.ssh_port // ""), .admin_ips, .selfsteal, .selfsteal_server, .bbr, .traffic_guard] | .[]
+      then [.node_domain, (.ssh_port // ""), .admin_ips, .selfsteal, .selfsteal_server, .bbr, .traffic_guard,
+            (.vpn_ports // ""), (.security // (if .ssh_port != null then "yes" else "no" end))] | .[]
       else error("invalid host configuration")
       end' "$file" 2>/dev/null); then
         fail "Не удалось прочитать настройки сервера из $file."
         return 2
     fi
     mapfile -t fields <<< "$data"
-    if [[ ${#fields[@]} != 7 ]] ||
+    if [[ ${#fields[@]} != 9 ]] ||
         { [[ -n ${fields[1]} ]] && ! valid_port "${fields[1]}"; } ||
         { [[ ${fields[3]} == yes || -n ${fields[0]} ]] && ! valid_domain "${fields[0]}"; }; then
         fail "Проверьте настройки сервера в $file."
@@ -35,6 +38,9 @@ load_host_settings() {
     SELFSTEAL_SERVER=${fields[4]}
     ENABLE_BBR=${fields[5]}
     ENABLE_TRAFFIC_GUARD=${fields[6]}
+    VPN_PORTS=${fields[7]}
+    ENABLE_SECURITY=${fields[8]}
+    VPN_PORTS_SAVED=yes
 }
 
 _standalone_load() {
@@ -52,6 +58,9 @@ _standalone_load() {
     SELFSTEAL_SERVER=caddy
     ENABLE_BBR=no
     ENABLE_TRAFFIC_GUARD=no
+    ENABLE_SECURITY=no
+    VPN_PORTS=
+    VPN_PORTS_SAVED=no
 }
 
 _standalone_save() {
@@ -60,8 +69,10 @@ _standalone_save() {
     if ! jq -n --arg domain "$NODE_DOMAIN" --argjson ssh "${SSH_PORT:-null}" --arg admin "$ADMIN_IPS" \
         --arg selfsteal "$ENABLE_SELFSTEAL" --arg webserver "$SELFSTEAL_SERVER" \
         --arg bbr "$ENABLE_BBR" --arg traffic "$ENABLE_TRAFFIC_GUARD" \
+        --arg security "$ENABLE_SECURITY" --arg vpn "$VPN_PORTS" \
         '{schema:1,node_domain:$domain,ssh_port:$ssh,admin_ips:$admin,
-          selfsteal:$selfsteal,selfsteal_server:$webserver,bbr:$bbr,traffic_guard:$traffic}' > "$tmp" ||
+          selfsteal:$selfsteal,selfsteal_server:$webserver,bbr:$bbr,traffic_guard:$traffic,
+          security:$security,vpn_ports:$vpn}' > "$tmp" ||
         ! mv -f -- "$tmp" "$CONFIG_DIR/host.json"; then
         rm -f -- "$tmp"
         return 1
@@ -93,13 +104,18 @@ _standalone_apply_security() {
 standalone_security() {
     local consent
     _standalone_load && apt_install_missing python3 && _standalone_access || return
-    security_preflight || return
     if [[ ${UI_INTERACTIVE:-no} == yes ]]; then
+        VPN_PORTS=$(security_prompt_vpn_ports "$VPN_PORTS") || return
+        security_preflight || return
         info "  UFW разрешит SSH на порту $SSH_PORT. Для остальных входящих соединений применяется запрет по умолчанию."
+        if [[ -n $VPN_PORTS ]]; then info "  Публичные порты — $VPN_PORTS."; fi
         if [[ $ENABLE_SELFSTEAL == yes ]]; then info '  TCP 80 останется доступен для сертификата.'; fi
         consent=$(yes_no '  Включить UFW и Fail2Ban?' n) || return
         [[ $consent == yes ]] || return 0
+    else
+        security_preflight || return
     fi
+    ENABLE_SECURITY=yes
     prepare_security || return
     run_change 'config network' _standalone_apply_security
 }
@@ -128,7 +144,7 @@ standalone_traffic_guard() {
     local consent
     _standalone_load || return
     if ! security_ufw_active; then
-        fail 'Сначала включите UFW в разделе «Компоненты и защита».'
+        fail 'Сначала включите UFW в разделе «Порты и защита».'
         return 1
     fi
     apt_install_missing ca-certificates curl python3 ipset iptables && get_admin_ip || return

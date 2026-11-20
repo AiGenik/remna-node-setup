@@ -6,19 +6,106 @@ security_ufw_active() {
     [[ ${status%%$'\n'*} == 'Status: active' ]]
 }
 
+security_configured_vpn_ports() {
+    if [[ ${VPN_PORTS+x} ]]; then
+        printf '%s\n' "$VPN_PORTS"
+    elif [[ -n ${NODE_PORT:-} ]]; then
+        printf '443/tcp\n'
+    fi
+}
+
+security_normalize_vpn_ports() {
+    local input=${1,,} entry port protocol item normalized=
+    local -a entries=()
+    input=${input//,/ }
+    input=${input//$'\n'/ }
+    read -r -a entries <<< "$input"
+    if (( ${#entries[@]} == 0 )) || [[ ${#entries[@]} == 1 && ${entries[0]} =~ ^(none|нет|-)$ ]]; then
+        printf '\n'
+        return 0
+    fi
+    for entry in "${entries[@]}"; do
+        port=${entry%%/*}
+        protocol=tcp
+        if [[ $entry == */* ]]; then protocol=${entry#*/}; fi
+        if ! valid_port "$port" || [[ $protocol != tcp && $protocol != udp ]]; then
+            fail 'Укажите порты как 9443/tcp, 2443/udp или введите «нет».'
+            return 1
+        fi
+        if [[ $protocol == tcp &&
+              ( $port == "${SSH_PORT:-}" || $port == "${NODE_PORT:-}" ||
+                ( ${ENABLE_SELFSTEAL:-no} == yes && ( $port == 80 || $port == 8443 ) ) ) ]]; then
+            fail "Порт $port/tcp зарезервирован для SSH, панели или self-steal."
+            return 1
+        fi
+        item=$port/$protocol
+        if [[ " $normalized " != *" $item "* ]]; then normalized+=${normalized:+ }$item; fi
+    done
+    printf '%s\n' "$normalized"
+}
+
+security_detect_vpn_ports() {
+    LC_ALL=C ss -H -lntup | python3 -c '
+import ipaddress
+import re
+import sys
+
+vpn_ports, other_ports = set(), set()
+for line in sys.stdin:
+    fields = line.split(maxsplit=6)
+    if len(fields) < 6 or fields[0] not in ("tcp", "udp"):
+        continue
+    address, _, port = fields[4].rpartition(":")
+    if not port.isascii() or not port.isdecimal() or not 1 <= int(port) <= 65535:
+        continue
+    address = address.strip("[]").split("%", 1)[0]
+    if address != "*":
+        try:
+            bound = ipaddress.ip_address(address)
+        except ValueError:
+            continue
+        if bound.version == 6 and bound.ipv4_mapped is not None:
+            bound = bound.ipv4_mapped
+        if bound.is_loopback or bound.is_link_local or bound.is_multicast:
+            continue
+    owners = re.findall(r"\(\"([^\"]+)\",pid=\d+,", fields[6] if len(fields) == 7 else "")
+    ports = vpn_ports if owners and set(owners) <= {"rw-core", "xray"} else other_ports
+    ports.add((int(port), fields[0]))
+
+print(" ".join(f"{port}/{protocol}" for port, protocol in sorted(vpn_ports - other_ports)))
+'
+}
+
+security_prompt_vpn_ports() {
+    local saved=${1-} detected default
+    detected=$(security_detect_vpn_ports 2>/dev/null) || detected=
+    if [[ -n $detected && $detected != "$saved" ]]; then
+        info "  Сейчас Xray слушает $detected." >&2
+    fi
+    if [[ $saved == '443/tcp' && -n $detected && $detected != "$saved" && ${VPN_PORTS_SAVED:-yes} == no ]]; then
+        saved=
+    fi
+    default=${saved:-${detected:-нет}}
+    info '  Config Profiles → inbounds → port · 9443/tcp 2443/udp' >&2
+    info '  Другие порты добавьте через пробел. «нет» — пропустить.' >&2
+    wizard_input 'Входящие порты VPN' "$default" security_normalize_vpn_ports
+}
+
 security_preflight() {
-    local node_port=${NODE_PORT:-}
+    local node_port=${NODE_PORT:-} vpn_ports
     valid_port "${SSH_PORT:-}" || { fail "Укажите действующий TCP-порт SSH."; return 1; }
     if [[ -n $node_port ]] && ! valid_port "$node_port"; then
         fail "Укажите служебный TCP-порт ноды из панели."
         return 1
     fi
-    if [[ ( -n $node_port && ( $node_port == "$SSH_PORT" || $node_port == 80 ||
-           $node_port == 443 || $node_port == 8443 || $SSH_PORT == 443 || $SSH_PORT == 8443 ) ) ||
-          ( ${ENABLE_SELFSTEAL:-no} == yes && ( $SSH_PORT == 80 || $SSH_PORT == 8443 ) ) ]]; then
+    if [[ ( -n $node_port && $node_port == "$SSH_PORT" ) ||
+          ( ${ENABLE_SELFSTEAL:-no} == yes &&
+            ( $SSH_PORT == 80 || $SSH_PORT == 8443 || $node_port == 80 || $node_port == 8443 ) ) ]]; then
         fail "Служебный порт ноды или порт SSH конфликтует с портом проекта."
         return 1
     fi
+    vpn_ports=$(security_configured_vpn_ports) || return 1
+    security_normalize_vpn_ports "$vpn_ports" >/dev/null || return 1
     if ! python3 - "$node_port" "${PANEL_IPS:-}" "${ADMIN_IPS:-} ${ADMIN_IP:-}" <<'PY'
 import ipaddress
 import sys
@@ -52,7 +139,23 @@ PY
 }
 
 security_remove_managed_ufw_rules() {
-    local rules number
+    local rules number rule
+    local -a arguments=()
+    local stored_pattern="^ufw ((allow|deny) [0-9]+/(tcp|udp)|allow from [[:xdigit:].:/]+ to any port [0-9]+ proto tcp) comment '(remna-node-setup:(ssh|panel|node|vpn|acme))'$"
+
+    if ! security_ufw_active; then
+        # Numbered rules are unavailable while UFW is disabled. Match only
+        # rules written by this project and pass the comment on deletion.
+        rules=$(LC_ALL=C ufw show added) || return 1
+        while IFS= read -r rule; do
+            if [[ $rule =~ $stored_pattern ]]; then
+                read -r -a arguments <<< "${BASH_REMATCH[1]}"
+                ufw --force delete "${arguments[@]}" comment "${BASH_REMATCH[4]}" || return 1
+            fi
+        done <<< "$rules"
+        return 0
+    fi
+
     rules=$(LC_ALL=C ufw status numbered) || return 1
 
     # UFW indexes one address family per entry. Delete from the bottom up.
@@ -63,6 +166,28 @@ security_remove_managed_ufw_rules() {
         sed -nE 's/^\[ *([0-9]+)\].*# remna-node-setup:(ssh|panel|node|vpn|acme)([[:space:]]|$).*/\1/p' <<< "$rules" |
             sort -rn
     )
+}
+
+security_allow_vpn_ports() {
+    local selected=$1 rules entry port protocol
+    local -a entries=()
+    [[ -n $selected ]] || return 0
+    rules=$(LC_ALL=C ufw show added) || return 1
+    read -r -a entries <<< "$selected"
+    for entry in "${entries[@]}"; do
+        port=${entry%/*}
+        protocol=${entry#*/}
+        # UFW's append can replace a matching rule's action or comment.
+        # Preserve existing rules and report explicit public denials.
+        if grep -Eq "^ufw (deny|reject) (log(-all)? )?$port(/$protocol)?( comment |$)" <<< "$rules"; then
+            fail "UFW уже запрещает $entry отдельным правилом. Проверьте sudo ufw status numbered."
+            return 1
+        fi
+        if grep -Eq "^ufw (allow|limit) (log(-all)? )?$port(/$protocol)?( comment |$)" <<< "$rules"; then
+            continue
+        fi
+        ufw allow in proto "$protocol" to any port "$port" comment remna-node-setup:vpn || return 1
+    done
 }
 
 security_install_sshd_jail() {
@@ -104,31 +229,74 @@ EOF_JAIL
 }
 
 security_apply() {
-    local panel_ip
+    local panel_ip vpn_ports ufw_status ufw_was_active=no change_default=yes guard_was_active=no
     local -a panel_addresses=()
     security_preflight || return 1
 
+    vpn_ports=$(security_configured_vpn_ports) || return 1
+    vpn_ports=$(security_normalize_vpn_ports "$vpn_ports") || return 1
     if security_ufw_active; then
-        security_remove_managed_ufw_rules || return 1
+        ufw_was_active=yes
+        ufw_status=$(LC_ALL=C ufw status verbose) || return 1
+        if grep -Fq 'Default: deny (incoming),' <<< "$ufw_status"; then change_default=no; fi
+        if [[ -n ${STATE_DIR:-} && -s $STATE_DIR/traffic-guard/version ]] &&
+           traffic_guard_firewall_active; then
+            guard_was_active=yes
+        fi
     fi
+    security_remove_managed_ufw_rules || return 1
     ufw prepend allow in proto tcp to any port "$SSH_PORT" comment remna-node-setup:ssh || return 1
-    ufw default deny incoming || return 1
+    # A full UFW reload can clear runtime hooks, including TrafficGuard's.
+    if [[ $change_default == yes ]]; then ufw default deny incoming || return 1; fi
     if [[ -n ${NODE_PORT:-} ]]; then
         ufw prepend deny in proto tcp to any port "$NODE_PORT" comment remna-node-setup:node || return 1
         read -r -a panel_addresses <<< "$PANEL_IPS"
         for panel_ip in "${panel_addresses[@]}"; do
             ufw prepend allow in proto tcp from "$panel_ip" to any port "$NODE_PORT" comment remna-node-setup:panel || return 1
         done
-        ufw prepend allow in proto tcp to any port 443 comment remna-node-setup:vpn || return 1
     fi
+    security_allow_vpn_ports "$vpn_ports" || return 1
     if [[ ${ENABLE_SELFSTEAL:-no} == yes ]]; then
         security_allow_acme || return 1
     fi
 
-    ufw --force enable || return 1
+    if [[ $ufw_was_active == no ]]; then ufw --force enable || return 1; fi
     security_ufw_active || { fail "UFW не активировался."; return 1; }
+    if [[ $guard_was_active == yes ]] &&
+       { [[ $change_default == yes ]] || ! traffic_guard_firewall_active; }; then
+        if ! systemctl restart antiscan-move-rules.service || ! traffic_guard_firewall_active; then
+            fail 'После применения правил не удалось подтвердить фильтр TrafficGuard.'
+            return 1
+        fi
+    fi
     security_install_sshd_jail || return 1
     info "UFW включён. Fail2Ban защищает SSH на порту $SSH_PORT."
+}
+
+security_vpn_status() {
+    local detected configured rules result=0 entry port protocol
+    local -a entries=()
+    configured=$(security_configured_vpn_ports) || return 1
+    detected=$(security_detect_vpn_ports) || return 1
+    info "Порты VPN в настройках — ${configured:-нет}."
+    if [[ -z $detected ]]; then
+        warn 'Xray ещё не слушает VPN-порты. Проверьте профиль ноды в Remnawave.'
+        return 1
+    fi
+    info "Xray слушает — $detected."
+    if security_ufw_active; then
+        rules=$(LC_ALL=C ufw status) || return 1
+        read -r -a entries <<< "$detected"
+        for entry in "${entries[@]}"; do
+            port=${entry%/*}
+            protocol=${entry#*/}
+            if ! grep -Eq "^$port(/$protocol)?( \(v6\))?[[:space:]]+(ALLOW|LIMIT) IN[[:space:]]+Anywhere([[:space:]]|$)" <<< "$rules"; then
+                warn "Для $entry не найдено отдельное публичное разрешение UFW. Проверьте «Порты и защита»."
+                result=1
+            fi
+        done
+    fi
+    return "$result"
 }
 
 security_allow_acme() {
@@ -148,11 +316,30 @@ security_status() {
     else
         warn "UFW выключен или недоступен"
     fi
-    if command -v fail2ban-client >/dev/null && fail2ban-client status sshd 2>/dev/null; then
-        :
+    if command -v fail2ban-client >/dev/null && fail2ban-client status sshd >/dev/null 2>&1; then
+        info 'Fail2Ban защищает SSH'
     else
         warn "Fail2Ban для SSH недоступен"
     fi
+}
+
+security_os_updates_status() {
+    local options
+    if command -v unattended-upgrade >/dev/null &&
+       options=$(apt-config dump 2>/dev/null) &&
+       awk '
+           function scheduled(value) { return value == "\"always\";" || value ~ /^"[0-9]*[1-9][0-9]*";$/ }
+           $1 == "APT::Periodic::Enable" { disabled = ($2 ~ /^"(0+|false|no)";$/) }
+           $1 == "APT::Periodic::Update-Package-Lists" { refresh = scheduled($2) }
+           $1 == "APT::Periodic::Unattended-Upgrade" { upgrade = scheduled($2) }
+           END { exit (disabled || !refresh || !upgrade) }
+       ' <<< "$options" &&
+       [[ $(active apt-daily.timer) == yes && $(active apt-daily-upgrade.timer) == yes ]]; then
+        info 'Автоматические обновления Ubuntu настроены.'
+    else
+        warn 'Автоматические обновления Ubuntu не подтверждены. Проверьте unattended-upgrades.'
+    fi
+    return 0
 }
 
 bbr_apply() {

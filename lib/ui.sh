@@ -4,6 +4,7 @@ ui_init() {
     UI_INTERACTIVE=no
     UI_CLEAR=no
     UI_ACCENT=
+    UI_OK=
     UI_BOLD=
     UI_MUTED=
     UI_WARN=
@@ -17,6 +18,7 @@ ui_init() {
             UI_RESET=$'\033[0m'
             if [[ -z ${NO_COLOR+x} ]]; then
                 UI_ACCENT=$'\033[1;96m'
+                UI_OK=$'\033[1;92m'
                 UI_MUTED=$'\033[2m'
                 UI_WARN=$'\033[1;93m'
             fi
@@ -44,36 +46,41 @@ ui_screen() {
     else
         printf '\n'
     fi
-    printf '  %s◆─●  Remna Node Setup%s  %sv%s%s\n' "${UI_ACCENT:-$UI_BOLD}" "$UI_RESET" "$UI_MUTED" "$UI_VERSION" "$UI_RESET"
-    if [[ -n $parent ]] && (( ${#parent} + ${#title} + 3 <= UI_RULE_WIDTH )); then
-        printf '  %s%s / %s%s%s\n' "$UI_MUTED" "$parent" "$UI_RESET$UI_BOLD" "$title" "$UI_RESET"
-    else
-        printf '  %s%s%s\n' "$UI_BOLD" "$title" "$UI_RESET"
-    fi
+    printf '  %s◆─●  REMNA NODE SETUP%s  %sv%s%s\n' "${UI_ACCENT:-$UI_BOLD}" "$UI_RESET" "$UI_MUTED" "$UI_VERSION" "$UI_RESET"
     if (( UI_RULE_WIDTH >= 10 )); then
         printf -v line '%*s' "$UI_RULE_WIDTH" ''
         printf '  %s%s%s\n' "$UI_MUTED" "${line// /─}" "$UI_RESET"
     fi
-    printf '\n'
+    if [[ -n $title ]]; then
+        if [[ -n $parent ]] && (( ${#parent} + ${#title} + 3 <= UI_RULE_WIDTH )); then
+            printf '  %s%s / %s%s%s\n\n' "$UI_MUTED" "$parent" "$UI_RESET$UI_BOLD" "$title" "$UI_RESET"
+        else
+            printf '  %s%s%s\n\n' "$UI_BOLD" "$title" "$UI_RESET"
+        fi
+    fi
 }
 
 ui_section() {
     printf '  %s%s%s\n' "${UI_ACCENT:-$UI_BOLD}" "$1" "$UI_RESET"
 }
 
+ui_progress_bar() {
+    local completed=$1 current=$2 total=$3 width filled completed_bar remaining_bar
+    width=$(( UI_RULE_WIDTH > 48 ? 36 : UI_RULE_WIDTH - 9 ))
+    if (( width >= 4 )); then
+        filled=$(( width * completed / total ))
+        printf -v completed_bar '%*s' "$filled" ''
+        printf -v remaining_bar '%*s' "$((width - filled))" ''
+        printf '  %s%s%s%s%s  ' "${UI_ACCENT:-$UI_BOLD}" "${completed_bar// /━}" \
+            "$UI_MUTED" "${remaining_bar// /─}" "$UI_RESET"
+    fi
+    printf '  %s%s / %s%s\n\n' "${UI_ACCENT:-$UI_BOLD}" "$current" "$total" "$UI_RESET"
+}
+
 ui_step() {
-    local i=1 total=${3:-7}
-    ui_screen "Шаг $1 из $total" 'Установка ноды'
-    printf '  '
-    while (( i <= total )); do
-        if (( i <= $1 )); then
-            printf '%s━%s' "${UI_ACCENT:-$UI_BOLD}" "$UI_RESET"
-        else
-            printf '%s─%s' "$UI_MUTED" "$UI_RESET"
-        fi
-        i=$(( i + 1 ))
-    done
-    printf '  %s%s%s\n\n' "$UI_BOLD" "$2" "$UI_RESET"
+    local current=$1 total=$3
+    ui_screen "$2" 'Установка'
+    ui_progress_bar "$((current - 1))" "$current" "$total"
 }
 
 ui_pause() {
@@ -86,6 +93,7 @@ ui_run() {
     local title=$1
     shift
     if [[ ${UI_CLEAR:-no} != yes ]]; then
+        printf '\n  %s\n' "$title"
         "$@"
         return
     fi
@@ -102,23 +110,66 @@ ui_run() {
     )
 }
 
+ui_install_progress() {
+    local completed=$1 failed=${2:-no} total=${#UI_INSTALL_PHASES[@]} current index mark color
+    if [[ $UI_CLEAR != yes ]]; then return 0; fi
+    current=$((completed < total ? completed + 1 : total))
+    ui_screen "$UI_INSTALL_TITLE"
+    ui_progress_bar "$completed" "$current" "$total"
+    for index in "${!UI_INSTALL_PHASES[@]}"; do
+        mark='○'
+        color=$UI_MUTED
+        if (( index < completed )); then
+            mark='✓'
+            color=${UI_OK:-$UI_BOLD}
+        elif (( index == completed )); then
+            mark='›'
+            color=${UI_ACCENT:-$UI_BOLD}
+            if [[ $failed == yes ]]; then mark='×'; color=${UI_WARN:-$UI_BOLD}; fi
+        fi
+        printf '  %s%s%s  %s\n' "$color" "$mark" "$UI_RESET" "${UI_INSTALL_PHASES[index]}"
+    done
+}
+
+ui_install_phase() {
+    if [[ $UI_CLEAR != yes ]]; then
+        ui_run "[$((UI_PROGRESS_DONE + 1))/${#UI_INSTALL_PHASES[@]}] ${UI_INSTALL_PHASES[UI_PROGRESS_DONE]}" "$@" || return
+    else
+        ui_install_progress "$UI_PROGRESS_DONE"
+        (
+            local output status=0
+            output=$(mktemp) || return
+            trap 'rm -f -- "$output"' EXIT
+            "$@" > "$output" 2>&1 || status=$?
+            if (( status != 0 )); then
+                ui_install_progress "$UI_PROGRESS_DONE" yes
+                printf '\n'
+                tail -n 16 -- "$output" >&2
+            fi
+            return "$status"
+        ) || return
+    fi
+    UI_PROGRESS_DONE=$((UI_PROGRESS_DONE + 1))
+}
+
 ui_menu_status() (
-    local page=$1 configured='Нода ещё не настроена' address
+    local page=$1 configured='Нода ещё не настроена' address mark='○'
     if [[ $page == main ]]; then
         if load_config 2>/dev/null; then
             configured='Настройки ноды сохранены'
-            if valid_domain "$NODE_DOMAIN" && valid_port "$NODE_PORT"; then
-                address=$NODE_DOMAIN:$NODE_PORT
+            mark='●'
+            if valid_port "$NODE_PORT"; then
+                address="$NODE_DOMAIN · $NODE_PORT/tcp"
                 if (( ${#address} + 11 <= UI_RULE_WIDTH )); then configured="Нода · $address"; fi
             fi
         elif [[ -s ${CONFIG_DIR:-/etc/remna-node-setup}/host.json ]]; then
             configured='Компоненты настроены · ноды пока нет'
         fi
-        printf '  %s●%s %s\n' "$UI_ACCENT" "$UI_RESET" "$configured"
+        printf '  %s%s  %s%s\n' "$UI_MUTED" "$mark" "$configured" "$UI_RESET"
     fi
     if [[ -s ${PENDING_FILE:-} ]]; then
         printf '  %s● Сеть ждёт подтверждения SSH%s\n' "${UI_WARN:-$UI_BOLD}" "$UI_RESET"
-        if [[ $page == main ]]; then printf '    С нового SSH-сеанса → [4] → [3]\n'; fi
+        if [[ $page == main ]]; then printf '    С нового SSH-сеанса → [6] → [3]\n'; fi
     fi
     if [[ $page == main || -s ${PENDING_FILE:-} ]]; then printf '\n'; fi
 )
@@ -135,7 +186,7 @@ ui_preparation() {
     printf '\n'
     ui_section 'Панель Remnawave'
     info '  Ноды → Управление → +'
-    info '  Укажите домен ноды. Скопируйте Node Port и Secret Key.'
+    info '  Укажите домен или IP ноды. Скопируйте Node Port и Secret Key.'
     printf '\n'
     ui_section 'IP панели'
     info '  Выполните на сервере панели'
@@ -165,17 +216,17 @@ select_selfsteal_server() {
 }
 
 MENU_ACTIONS=(
-    'main|1|Установить ноду и компоненты|Пошаговая настройка нового VPS|install'
-    'main|2|Компоненты и защита|Self-steal, UFW, Fail2Ban, BBR и TrafficGuard|@components'
-    'main|3|Диагностика|Статус ноды, проверка сервисов и логи|@diagnostics'
-    'main|4|Снимки и восстановление|Резервные копии и откат сетевых правил|@recovery'
-    'main|5|Обновления|Версии скрипта и ноды|@updates'
-    'main|6|Подготовка к установке|Где взять домен, адрес панели, порт и ключ|guide'
+    'main|1|Только нода|Docker и подключение к панели|install node-only'
+    'main|2|Нода и компоненты|Self-steal, BBR и защита|install'
+    'main|3|Порты и защита||@components'
+    'main|4|Диагностика||@diagnostics'
+    'main|5|Обновления||@updates'
+    'main|6|Снимки и восстановление||@recovery'
+    'main|7|Где взять данные для установки||guide'
     'components|1|Настроить self-steal|Caddy или Nginx|selfsteal'
-    'components|2|Настроить UFW и Fail2Ban|Правила входящих соединений и защита SSH|security'
+    'components|2|Входящие порты|Правила UFW и защита SSH через Fail2Ban|security'
     'components|3|Включить BBR и fq|Настройки TCP, если их поддерживает ядро|bbr'
     'components|4|TrafficGuard|Включить или обновить список сканеров|update traffic-guard'
-    'components|5|Установить только ноду|Подключение к панели и правила доступа|install node-only'
     'diagnostics|1|Статус|Нода и установленные компоненты|status'
     'diagnostics|2|Проверить сервисы|Порты, компоненты и место на диске|doctor'
     'diagnostics|3|Логи ноды|Последние сообщения контейнера|logs'
@@ -190,19 +241,21 @@ MENU_ACTIONS=(
 )
 
 show_menu() {
-    local page=main parent title choice row section index label detail action notice='' id snapshots
+    local page=main parent title heading choice row section index label detail action notice='' id snapshots
     local -a command=()
     while true; do
         case "$page" in
             main) title='Главное меню' ;;
-            components) title='Компоненты и защита' ;;
+            components) title='Порты и защита' ;;
             diagnostics) title='Диагностика' ;;
             recovery) title='Снимки и восстановление' ;;
             updates) title='Обновления' ;;
         esac
         parent=
+        heading=$title
+        if [[ $page == main ]]; then heading=; fi
         if [[ $page != main ]]; then parent='Меню'; fi
-        ui_screen "$title" "$parent"
+        ui_screen "$heading" "$parent"
         ui_menu_status "$page"
 
         local -A labels=() actions=()
@@ -211,8 +264,14 @@ show_menu() {
             [[ $section == "$page" ]] || continue
             labels[$index]=$label
             actions[$index]=$action
+            if [[ $page == main ]]; then
+                case "$index" in
+                    1) printf '  %sУСТАНОВКА%s\n' "$UI_BOLD" "$UI_RESET" ;;
+                    3) printf '\n  %sУПРАВЛЕНИЕ%s\n' "$UI_BOLD" "$UI_RESET" ;;
+                esac
+            fi
             ui_menu_key "$index" "$label"
-            if [[ $UI_COMPACT != yes ]]; then
+            if [[ -n $detail && $UI_COMPACT != yes ]]; then
                 printf '      %s%s%s\n' "$UI_MUTED" "$detail" "$UI_RESET"
             fi
         done

@@ -60,8 +60,9 @@ nginx_selfsteal_preflight() {
 }
 
 _nginx_selfsteal_render_config() {
-    local mode=$1 domain=${NODE_DOMAIN%.}
+    local mode=$1 domain=${NODE_DOMAIN%.} redirect_host
     local cert_dir=$STATE_DIR/nginx-certbot/config/live/$domain
+    redirect_host=$(selfsteal_redirect_host) || return
     cat <<EOF_NGINX
 $_selfsteal_marker
 server {
@@ -75,7 +76,7 @@ server {
     }
 
     location / {
-        return 308 https://$domain\$request_uri;
+        return 308 https://$redirect_host\$request_uri;
     }
 }
 EOF_NGINX

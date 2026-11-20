@@ -64,16 +64,30 @@ selfsteal_preflight() {
             return 1
         fi
     done
-    listening=$(ss -H -ltnp 'sport = :443') || return 1
-    if [[ -n $listening ]] && { ! _node_owned_config || ! _node_owns_listeners "$listening"; }; then
-        fail "TCP-порт 443 нужен для Xray и уже занят другим сервисом."
-        return 1
-    fi
     return 0
 }
 
+selfsteal_public_port() {
+    local entry
+    for entry in ${VPN_PORTS-}; do
+        if [[ $entry == */tcp ]] && valid_port "${entry%/*}"; then
+            printf '%s\n' "${entry%/*}"
+            return
+        fi
+    done
+    printf '443\n'
+}
+
+selfsteal_redirect_host() {
+    local port
+    port=$(selfsteal_public_port) || return
+    printf '%s' "${NODE_DOMAIN%.}"
+    if [[ $port != 443 ]]; then printf ':%s' "$port"; fi
+}
+
 _selfsteal_render_config() {
-    local target=$1 domain=${NODE_DOMAIN%.}
+    local target=$1 domain=${NODE_DOMAIN%.} redirect_host
+    redirect_host=$(selfsteal_redirect_host) || return
     cat >"$target" <<EOF_CADDY
 $_selfsteal_marker
 {
@@ -84,7 +98,7 @@ $_selfsteal_marker
 }
 
 http://$domain {
-	redir https://${domain}{uri} 308
+	redir https://${redirect_host}{uri} 308
 }
 
 https://$domain:8443 {
@@ -110,13 +124,8 @@ _selfsteal_caddy_verify() {
     _selfsteal_caddy_owned_config && systemctl is-active --quiet caddy.service && _selfsteal_verify_https
 }
 
-_selfsteal_caddy_apply() {
-    local stage attempt
-    apt_install_missing caddy || return 1
-    install -d -m 0755 /etc/caddy "$_selfsteal_site" || return 1
-    if [[ ! -f $_selfsteal_site/index.html ]]; then
-        install -m 0644 "$PROJECT_DIR/templates/index.html" "$_selfsteal_site/index.html" || return 1
-    fi
+_selfsteal_caddy_activate_config() {
+    local stage
     stage=$(mktemp /etc/caddy/.remna-setup.XXXXXX) || return 1
     if ! _selfsteal_render_config "$stage" ||
         ! caddy validate --adapter caddyfile --config "$stage" ||
@@ -126,8 +135,17 @@ _selfsteal_caddy_apply() {
         return 1
     fi
     systemctl enable --now caddy.service || return 1
-    systemctl reload caddy.service || return 1
+    systemctl reload caddy.service
+}
 
+_selfsteal_caddy_apply() {
+    local attempt
+    apt_install_missing caddy || return 1
+    install -d -m 0755 /etc/caddy "$_selfsteal_site" || return 1
+    if [[ ! -f $_selfsteal_site/index.html ]]; then
+        install -m 0644 "$PROJECT_DIR/templates/index.html" "$_selfsteal_site/index.html" || return 1
+    fi
+    _selfsteal_caddy_activate_config || return 1
     info "Caddy получает сертификат для $NODE_DOMAIN через порт 80."
     for ((attempt = 0; attempt < 35; attempt++)); do
         if _selfsteal_caddy_verify; then
@@ -162,8 +180,15 @@ selfsteal_verify() {
     esac
 }
 
+selfsteal_refresh_redirect() {
+    case "$SELFSTEAL_SERVER" in
+        caddy) _selfsteal_caddy_owned_config && _selfsteal_caddy_activate_config ;;
+        nginx) _selfsteal_nginx_owned_config && _nginx_selfsteal_activate_config tls ;;
+    esac
+}
+
 selfsteal_status() {
-    local listening name=Caddy
+    local name=Caddy
     if [[ $SELFSTEAL_SERVER == nginx ]]; then name=Nginx; fi
     if ! _selfsteal_caddy_owned_config && ! _selfsteal_nginx_owned_config; then
         info "Self-steal: не установлен этим скриптом."
@@ -175,16 +200,13 @@ selfsteal_status() {
         warn "Self-steal: $name или доверенный сертификат для $NODE_DOMAIN недоступен."
         return 1
     fi
-    listening=$(ss -H -ltnp 'sport = :443') || return 1
-    if ! _node_owned_config || ! _node_owns_listeners "$listening"; then
-        warn "Для внешнего подключения назначьте ноде профиль VLESS REALITY с портом 443."
-    fi
 }
 
 selfsteal_panel_help() {
+    local port
+    port=$(selfsteal_public_port) || return
     cat <<EOF_PANEL
-В панели назначьте ноде профиль с входящим VLESS REALITY по TCP на порту 443.
-В realitySettings укажите target $_selfsteal_endpoint, serverNames ["${NODE_DOMAIN%.}"] и xver 0.
-Сохраните свои privateKey и shortIds. Укажите домен ноды в Host и проверьте подключение клиента.
+  VLESS REALITY и Host · $port/tcp
+  realitySettings · target $_selfsteal_endpoint · serverNames ["${NODE_DOMAIN%.}"] · xver 0
 EOF_PANEL
 }

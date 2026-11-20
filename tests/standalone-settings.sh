@@ -105,3 +105,4 @@ if standalone_selfsteal nginx; then exit 1; fi
 cmp -s "$CONFIG_DIR/before.json" "$CONFIG_DIR/host.json"
 
 printf '%s\n' 'Standalone-компоненты, настройки и области отката проверены.'
+"$PROJECT_DIR/tests/vpn-ports.sh"

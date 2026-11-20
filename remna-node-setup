@@ -37,9 +37,10 @@ usage() {
 Remna Node Setup
 
   remna-node-setup                     Меню
-  remna-node-setup install [node-only] Настроить ноду и выбранные компоненты
+  remna-node-setup install            Настроить ноду, защиту и выбранные компоненты
+  remna-node-setup install node-only  Установить только Docker и ноду
   remna-node-setup selfsteal [caddy|nginx] Настроить веб-сервер для self-steal
-  remna-node-setup security            Применить настройки UFW и Fail2Ban
+  remna-node-setup security           Настроить входящие порты, UFW и Fail2Ban
   remna-node-setup bbr                 Включить BBR и fq
   remna-node-setup status              Статус
   remna-node-setup doctor              Диагностика
@@ -59,7 +60,8 @@ HELP
 self_test() {
     local name
     for name in node_apply node_verify node_restore_runtime selfsteal_apply selfsteal_verify \
-        nginx_selfsteal_apply nginx_selfsteal_stop security_apply security_preflight bbr_apply traffic_guard_apply \
+        nginx_selfsteal_apply nginx_selfsteal_stop security_apply security_preflight security_detect_vpn_ports \
+        security_prompt_vpn_ports security_vpn_status security_os_updates_status bbr_apply traffic_guard_apply \
         traffic_guard_capture_runtime traffic_guard_restore_before_ufw traffic_guard_restore_after_ufw \
         release_update release_rollback release_acquire_lock install_wizard restore_snapshot \
         load_host_settings standalone_selfsteal standalone_security standalone_bbr standalone_traffic_guard; do

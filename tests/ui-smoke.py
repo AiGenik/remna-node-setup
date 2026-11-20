@@ -1,8 +1,11 @@
 import errno
+import fcntl
 import os
 from pathlib import Path
 import pty
+import re
 import select
+import struct
 import subprocess
 import termios
 import time
@@ -19,44 +22,74 @@ set -euo pipefail
 source lib/common.sh
 source lib/ui.sh
 source lib/manager.sh
+source lib/security.sh
+source lib/standalone.sh
 PROJECT_DIR=$PWD
-CONFIG_DIR=/dev/null
-version_get() { printf '0.1.3\n'; }
+CONFIG_DIR=$(mktemp -d)
+trap 'rm -rf -- "$CONFIG_DIR"' EXIT
 apt_install_missing() { :; }
 get_admin_ip() { ADMIN_IP=198.51.100.8; }
 detect_ssh_port() { printf '2202\n'; }
-load_config() { return 1; }
+security_detect_vpn_ports() { printf '9443/tcp\n'; }
 security_preflight() { :; }
 node_preflight() { :; }
 selfsteal_preflight() { :; }
-node_prepare_image() { :; }
-prepare_security() { :; }
+selfsteal_panel_help() { :; }
+node_prepare_image() {
+    if [[ ${FAIL_IMAGE:-no} == yes ]]; then
+        printf 'TEST-IMAGE-FAILED\n' >&2
+        return 1
+    fi
+}
+node_apply() { :; }
+prepare_security() { [[ $EXPECTED_MODE == full ]]; }
+security_apply() { [[ $EXPECTED_MODE == full ]]; }
+selfsteal_apply() { [[ $EXPECTED_MODE == full ]]; }
 run_change() {
-    [[ $NODE_DOMAIN == node.example.com && $NODE_PORT == 3333 && $SSH_PORT == 2202 &&
-       $PANEL_IPS == 192.0.2.25 && $NEW_NODE_SECRET == "$TEST_KEY" &&
-       $SELFSTEAL_SERVER == "$EXPECTED_WEBSERVER" ]] || return 1
+    local scope=$1
+    shift
+    [[ $NODE_PORT == 3333 && $NEW_NODE_SECRET == "$TEST_KEY" ]] || return 1
+    if [[ $EXPECTED_MODE == full ]]; then
+        [[ $NODE_DOMAIN == node.example.com && $SSH_PORT == 2202 &&
+           $PANEL_IPS == 192.0.2.25 && $SELFSTEAL_SERVER == "$EXPECTED_WEBSERVER" &&
+           $VPN_PORTS == '9443/tcp 2443/udp' && $scope == 'config node network'* ]] || return 1
+    else
+        [[ $NODE_DOMAIN == 192.0.2.10 && $ENABLE_SECURITY == no && -z $PANEL_IPS &&
+           -z $SSH_PORT && $scope == 'config node' ]] || return 1
+    fi
+    "$@" || return 1
+    load_config || return 1
+    [[ $ENABLE_SECURITY == "$([[ $EXPECTED_MODE == full ]] && printf yes || printf no)" ]] || return 1
     printf 'TEST-APPLIED\n'
 }
 dispatch() {
     case "$1" in
-        install) install_wizard ;;
+        install) install_wizard "${2-}" ;;
         status) printf 'TEST-NODE-STATUS\n' ;;
     esac
 }
 PENDING_FILE=/dev/null
-NODE_SECRET=/dev/null
+NODE_SECRET=$CONFIG_DIR/node.secret
 ui_init
 "$1"
 '''
 
 
 class Terminal:
+    def __init__(self, mode="full", fail_image=False, rows=24, columns=80):
+        self.mode = mode
+        self.fail_image = fail_image
+        self.rows = rows
+        self.columns = columns
+
     def __enter__(self):
         self.fd, slave = pty.openpty()
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", self.rows, self.columns, 0, 0))
         self.output = b""
         self.process = subprocess.Popen(
             ["bash", "-c", FIXTURE, "ui-test", "show_menu"],
-            cwd=ROOT, env={**ENV, "EXPECTED_WEBSERVER": "nginx"},
+            cwd=ROOT, env={**ENV, "EXPECTED_WEBSERVER": "nginx", "EXPECTED_MODE": self.mode,
+                           "FAIL_IMAGE": "yes" if self.fail_image else "no"},
             stdin=slave, stdout=slave, stderr=slave,
         )
         os.close(slave)
@@ -99,43 +132,33 @@ class Terminal:
             time.sleep(0.01)
 
 
+def without_ansi(screen):
+    return re.sub(rb"\x1b\[[0-9;?]*[A-Za-z]", b"", screen).decode()
+
+
 with Terminal() as terminal:
-    assert "Главное меню".encode() in terminal.expect("Номер пункта →")
-    terminal.enter("3")
+    screen = without_ansi(terminal.expect("Номер пункта →"))
+    assert "◆─●  REMNA NODE SETUP" in screen
+    assert "УСТАНОВКА" in screen and "УПРАВЛЕНИЕ" in screen
+    assert "[1] Только нода" in screen and "[2] Нода и компоненты" in screen
+    terminal.enter("4")
     screen = terminal.expect("Номер пункта →")
     assert CLEAR in screen and "Диагностика".encode() in screen.split(CLEAR)[-1]
-    assert "Главное меню".encode() not in screen.split(CLEAR)[-1]
+    assert "УПРАВЛЕНИЕ".encode() not in screen.split(CLEAR)[-1]
     terminal.enter("1")
     assert "TEST-NODE-STATUS".encode() in terminal.expect("Enter — вернуться в меню")
     terminal.enter()
     terminal.expect("Номер пункта →")
     terminal.enter("0")
     terminal.expect("Номер пункта →")
-    terminal.enter("1")
-    assert CLEAR in terminal.expect("Поддомен ноды →")
+    terminal.enter("2")
+    assert CLEAR in terminal.expect("Адрес ноды →")
     terminal.enter("https://node.example.com")
-    assert "Введите поддомен".encode() in terminal.expect("Поддомен ноды →")
+    assert "Введите домен или публичный IP".encode() in terminal.expect("Адрес ноды →")
     terminal.enter("node.example.com")
     screen = terminal.expect("NODE_PORT из панели →")
-    assert CLEAR in screen and "Домен или IP".encode() in screen
+    assert "из Compose".encode() in screen
     terminal.enter("  - NODE_PORT='3333'")
-    assert "сервере панели Remnawave".encode() in terminal.expect("IP панели →")
-    terminal.enter("192.0.2.25")
-    terminal.expect("SSH-порт VPS → [2202]")
-    terminal.enter()
-    terminal.expect("Доверенные IP или подсети → [198.51.100.8]")
-    terminal.enter()
-    terminal.expect("HTTPS для VLESS REALITY? [Y/n]")
-    terminal.enter()
-    terminal.expect("Веб-сервер → [1]")
-    terminal.enter("2")
-    terminal.expect("настройка TCP? [Y/n]")
-    terminal.enter("invalid")
-    terminal.expect("Введите y или n.")
-    terminal.expect("настройка TCP? [Y/n]")
-    terminal.enter("n")
-    terminal.expect("блокировка сканеров? [y/N]")
-    terminal.enter("n")
     terminal.expect("SECRET_KEY из панели →")
     terminal.wait_for_hidden_input()
     terminal.type_text(TEST_KEY)
@@ -148,25 +171,96 @@ with Terminal() as terminal:
     screen = terminal.expect(f"Введено {len(compose)} симв.")
     assert KEY_MARKER.encode() not in screen
     terminal.enter()
+    terminal.expect("HTTPS-страница для REALITY? [Y/n]")
+    terminal.enter()
+    terminal.expect("Веб-сервер → [1]")
+    terminal.enter("2")
+    terminal.expect("оптимизация TCP? [Y/n]")
+    terminal.enter("invalid")
+    terminal.expect("Введите y или n.")
+    terminal.expect("оптимизация TCP? [Y/n]")
+    terminal.enter("n")
+    terminal.expect("блокировка известных сканеров? [y/N]")
+    terminal.enter("n")
+    terminal.expect("Порт SSH → [2202]")
+    terminal.enter()
+    assert "сервере панели".encode() in terminal.expect("IP панели →")
+    terminal.enter("192.0.2.25")
+    terminal.expect("Входящие порты VPN → [9443/tcp]")
+    terminal.enter("9443/tcp 2443/udp")
     screen = terminal.expect("Начать установку? [y/N]")
-    assert KEY_MARKER.encode() not in screen and b"3333" in screen and b"nginx" in screen
+    assert KEY_MARKER.encode() not in screen
+    assert b"3333" in screen and b"nginx" in screen and b"9443/tcp 2443/udp" in screen
     assert termios.tcgetattr(terminal.fd)[3] & termios.ECHO
     terminal.enter("y")
-    assert b"TEST-APPLIED" in terminal.expect("Enter — вернуться в меню")
+    screen = terminal.expect("Enter — вернуться в меню")
+    progress = without_ansi(screen)
+    assert "TEST-APPLIED" in progress and "1 / 5" in progress and "5 / 5" in progress
+    assert "›  Docker и образ ноды" in progress and "○  Контейнер Remnawave" in progress
+    finished = without_ansi(screen.split(CLEAR)[-1])
+    assert finished.count("✓") == 5 and "Установка завершена" in finished
     terminal.enter()
     terminal.expect("Номер пункта →")
     terminal.enter("0")
     assert terminal.process.wait(timeout=5) == 0
 
 with_input = "\n".join(
-    ["node.example.com", "NODE_PORT=3333", "192.0.2.25", "", "", "n", "n", "n", TEST_KEY, "y", ""]
+    ["node.example.com", "NODE_PORT=3333", TEST_KEY, "n", "n", "n", "", "192.0.2.25",
+     "9443/tcp 2443/udp", "y", ""]
 )
 plain = subprocess.run(
     ["bash", "-c", FIXTURE, "ui-test", "install_wizard"],
-    cwd=ROOT, env={**ENV, "EXPECTED_WEBSERVER": "caddy"},
+    cwd=ROOT, env={**ENV, "EXPECTED_WEBSERVER": "caddy", "EXPECTED_MODE": "full"},
     input=with_input, capture_output=True, text=True, check=True,
 )
 assert "TEST-APPLIED" in plain.stdout
+assert "[1/4] Docker и образ ноды" in plain.stdout and "[4/4] Контейнер Remnawave" in plain.stdout
 assert "\x1b" not in plain.stdout + plain.stderr
 assert TEST_KEY not in plain.stdout + plain.stderr
-print("Проверены y/n, выбор Nginx, скрытая вставка длинного ключа и восстановление терминала.")
+
+def accept_minimal_install(terminal):
+    assert "Только нода".encode() in terminal.expect("Номер пункта →")
+    terminal.enter("1")
+    terminal.expect("Адрес ноды →")
+    terminal.enter("192.0.2.10")
+    terminal.expect("NODE_PORT из панели →")
+    terminal.enter("3333")
+    terminal.expect("SECRET_KEY из панели →")
+    terminal.wait_for_hidden_input()
+    terminal.type_text(TEST_KEY)
+    terminal.expect(f"Введено {len(TEST_KEY)} симв.")
+    terminal.enter()
+    screen = terminal.expect("Начать установку? [y/N]")
+    assert b"UFW" not in screen and b"Fail2Ban" not in screen
+    terminal.enter("y")
+
+
+with Terminal("node-only") as terminal:
+    accept_minimal_install(terminal)
+    screen = terminal.expect("Enter — вернуться в меню")
+    progress = without_ansi(screen)
+    assert "TEST-APPLIED" in progress and "1 / 2" in progress and "2 / 2" in progress
+    assert without_ansi(screen.split(CLEAR)[-1]).count("✓") == 2
+    assert b"UFW" not in screen and b"Fail2Ban" not in screen and KEY_MARKER.encode() not in screen
+    terminal.enter()
+    terminal.expect("Номер пункта →")
+    terminal.enter("0")
+    assert terminal.process.wait(timeout=5) == 0
+
+with Terminal("node-only", fail_image=True) as terminal:
+    accept_minimal_install(terminal)
+    screen = without_ansi(terminal.expect("Enter — вернуться в меню").split(CLEAR)[-1])
+    assert "×  Docker и образ ноды" in screen and "○  Контейнер Remnawave" in screen
+    assert "TEST-IMAGE-FAILED" in screen and "Установка завершена" not in screen
+    terminal.enter()
+    terminal.expect("Номер пункта →")
+    terminal.enter("0")
+    assert terminal.process.wait(timeout=5) == 0
+
+with Terminal(rows=18, columns=42) as terminal:
+    screen = without_ansi(terminal.expect("Номер пункта →"))
+    assert "[1] Только нода" in screen and "Docker и подключение к панели" not in screen
+    terminal.enter("0")
+    assert terminal.process.wait(timeout=5) == 0
+
+print("Проверены меню, скрытый ввод, TCP/UDP и прогресс установки при успехе и ошибке.")
