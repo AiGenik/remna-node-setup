@@ -1,0 +1,29 @@
+name: Release
+on:
+  push:
+    tags:
+      - 'v*'
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Check and package
+        run: |
+          bash -n remna-node-setup
+          bash -n install.sh
+          for file in lib/*.sh scripts/*.sh; do
+            bash -n "$file"
+          done
+          shellcheck -x remna-node-setup install.sh lib/*.sh scripts/*.sh tests/*.sh
+          ./remna-node-setup --self-test
+          ./tests/release-smoke.sh
+          ./scripts/build-release.sh dist "$GITHUB_REF_NAME"
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/remna-node-setup.tar.gz dist/SHA256SUMS --verify-tag --generate-notes
