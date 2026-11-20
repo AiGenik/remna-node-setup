@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+PROJECT_DIR=$(cd -- "$(dirname -- "$(realpath -- "$0")")" && pwd -P)
+CONFIG_DIR=/etc/remna-node-setup
+STATE_DIR=/var/lib/remna-node-setup
+NODE_DIR=/opt/remna-node-setup-node
+BACKUP_DIR=/var/backups/remna-node-setup
+NODE_SECRET=$CONFIG_DIR/node.secret
+
+# shellcheck source=lib/common.sh
+source "$PROJECT_DIR/lib/common.sh"
+# shellcheck source=lib/release.sh
+source "$PROJECT_DIR/lib/release.sh"
+# shellcheck source=lib/node.sh
+source "$PROJECT_DIR/lib/node.sh"
+# shellcheck source=lib/selfsteal.sh
+source "$PROJECT_DIR/lib/selfsteal.sh"
+# shellcheck source=lib/security.sh
+source "$PROJECT_DIR/lib/security.sh"
+# shellcheck source=lib/traffic-guard.sh
+source "$PROJECT_DIR/lib/traffic-guard.sh"
+# shellcheck source=lib/transaction.sh
+source "$PROJECT_DIR/lib/transaction.sh"
+# shellcheck source=lib/manager.sh
+source "$PROJECT_DIR/lib/manager.sh"
+
+usage() {
+    cat <<'HELP'
+Remna Node Setup
+
+  remna-node-setup                     Меню
+  remna-node-setup install             Настроить ноду и выбранные компоненты
+  remna-node-setup selfsteal           Добавить self-steal
+  remna-node-setup security            Применить настройки UFW и Fail2Ban
+  remna-node-setup bbr                 Включить BBR и fq
+  remna-node-setup status              Статус
+  remna-node-setup doctor              Диагностика
+  remna-node-setup logs                Последние сообщения ноды
+  remna-node-setup backup              Сохранить конфигурацию
+  remna-node-setup restore ID          Восстановить снимок
+  remna-node-setup update tool [vX.Y.Z] Обновить скрипт с GitHub
+  remna-node-setup update node          Обновить ноду из манифеста скрипта
+  remna-node-setup update traffic-guard Применить версию и список из манифеста
+  remna-node-setup rollback tool        Вернуть предыдущую версию скрипта
+  remna-node-setup rollback            Отменить ожидающее подтверждения изменение
+  remna-node-setup confirm             Подтвердить из нового SSH-сеанса
+HELP
+}
+
+self_test() {
+    local name
+    for name in node_apply node_verify node_restore_runtime selfsteal_apply selfsteal_verify \
+        selfsteal_restore_runtime security_apply security_preflight bbr_apply traffic_guard_apply \
+        traffic_guard_capture_runtime traffic_guard_restore_before_ufw traffic_guard_restore_after_ufw \
+        release_update release_rollback release_acquire_lock install_wizard restore_snapshot; do
+        declare -F "$name" >/dev/null || { fail "Не загружен модуль $name."; return 1; }
+    done
+    jq -e 'type == "object" and (.version | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")) and
+           (.node_image | test("^remnawave/node:[^@]+@sha256:[a-f0-9]{64}$")) and
+           (.traffic_guard_version | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")) and
+           (.traffic_guard_list_url | startswith("https://")) and
+           ([.traffic_guard_amd64_sha256, .traffic_guard_arm64_sha256, .traffic_guard_list_sha256] |
+            all(test("^[a-f0-9]{64}$")))' "$PROJECT_DIR/versions.json" >/dev/null
+}
+
+case "${1-}" in
+    --help|-h|help) usage; exit ;;
+    --version) version_get version; exit ;;
+    --self-test) self_test; exit ;;
+esac
+
+ensure_host
+install -d -m 0700 -- "$CONFIG_DIR" "$STATE_DIR" "$BACKUP_DIR"
+
+if [[ ${1-} == __network-timeout ]]; then
+    release_acquire_lock wait
+    rollback_pending "${2-}"
+    exit
+fi
+
+if (( $# == 0 )); then
+    show_menu
+    exit
+fi
+dispatch "$@"
