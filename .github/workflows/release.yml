@@ -23,6 +23,8 @@ jobs:
           ./remna-node-setup --self-test
           ./tests/ssh-settings.sh
           ./tests/selfsteal-settings.sh
+          ./tests/standalone-settings.sh
+          python3 tests/dns-settings.py
           python3 tests/ui-smoke.py
           ./tests/release-smoke.sh
           ./scripts/build-release.sh dist "$GITHUB_REF_NAME"
