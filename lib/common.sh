@@ -92,13 +92,31 @@ prompt() {
 }
 
 yes_no() {
-    local answer
-    answer=$(prompt "$1 (y/n)" "$2") || return
-    case "$answer" in
-        [yYдД]|yes|да) printf 'yes\n' ;;
-        [nNнН]|no|нет) printf 'no\n' ;;
-        *) fail 'Ответьте y или n.' ;;
-    esac
+    local answer default=н
+    if [[ $2 == y ]]; then default=д; fi
+    while answer=$(prompt "$1 (д/н) →" "$default"); do
+        case "$answer" in
+            y|д|yes|да|Y|Д) printf 'yes\n'; return 0 ;;
+            n|н|no|нет|N|Н) printf 'no\n'; return 0 ;;
+        esac
+        warn 'Введите д или н.'
+        if [[ ${UI_INTERACTIVE:-no} != yes ]]; then return 1; fi
+    done
+    return 1
+}
+
+compose_value() {
+    local value=${1%$'\r'} key=$2
+    local prefix="^[[:blank:]]*(-[[:blank:]]*)?${key}[[:blank:]]*[=:][[:blank:]]*"
+    if [[ $value =~ $prefix ]]; then
+        value=${value#"${BASH_REMATCH[0]}"}
+    fi
+    value=${value#"${value%%[![:blank:]]*}"}
+    value=${value%"${value##*[![:blank:]]}"}
+    if [[ $value == \"*\" || $value == \'*\' ]]; then
+        value=${value:1:-1}
+    fi
+    printf '%s\n' "$value"
 }
 
 ssh_context() {

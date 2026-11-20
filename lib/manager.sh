@@ -41,23 +41,69 @@ detect_ssh_port() {
 
 ask_secret() {
     local answer
-    if [[ -s $NODE_SECRET ]]; then
-        printf 'SECRET_KEY из панели [Enter сохраняет текущий] ' >&2
-    else
-        printf 'SECRET_KEY из панели ' >&2
-    fi
-    IFS= read -rs answer || return
-    printf '\n' >&2
-    if [[ $answer == *$'\r'* || ( -z $answer && ! -s $NODE_SECRET ) ]]; then
-        fail 'Введите ключ из панели одной строкой.'
+    while true; do
+        if [[ -s $NODE_SECRET ]]; then
+            printf '  SECRET_KEY из панели [Enter сохраняет текущий] → ' >&2
+        else
+            printf '  SECRET_KEY из панели → ' >&2
+        fi
+        IFS= read -rs answer || return
+        printf '\n' >&2
+        answer=$(compose_value "$answer" SECRET_KEY) || return
+        if [[ $answer != *[[:space:]]* && ( -n $answer || -s $NODE_SECRET ) ]]; then
+            # shellcheck disable=SC2034 # Used by save_secret in common.sh.
+            NEW_NODE_SECRET=$answer
+            return 0
+        fi
+        warn 'Вставьте ключ или строку SECRET_KEY из конфигурации.'
+        if [[ $UI_INTERACTIVE != yes ]]; then return 1; fi
+    done
+}
+
+wizard_input() {
+    local label=$1 default=$2 check=$3 answer
+    shift 3
+    while answer=$(prompt "  $label →" "$default"); do
+        if "$check" "$answer" "$@"; then return 0; fi
+        if [[ $UI_INTERACTIVE != yes ]]; then return 1; fi
+    done
+    return 1
+}
+
+check_node_domain() {
+    local domain=${1,,}
+    domain=${domain%.}
+    valid_domain "$domain" || { fail 'Введите поддомен как node.example.com.'; return 1; }
+    printf '%s\n' "$domain"
+}
+
+check_node_port() {
+    local port
+    port=$(compose_value "$1" NODE_PORT) || return
+    valid_port "$port" || { fail 'Введите число от 1 до 65535 или строку NODE_PORT из панели.'; return 1; }
+    printf '%s\n' "$port"
+}
+
+check_panel_ips() {
+    local addresses
+    addresses=$(normalize_ips "$1") || return
+    [[ -n $addresses ]] || { fail 'Укажите хотя бы один исходящий IP панели.'; return 1; }
+    printf '%s\n' "$addresses"
+}
+
+check_ssh_port() {
+    local port=$1 expected=$2
+    valid_port "$port" || { fail 'Введите номер текущего порта SSH.'; return 1; }
+    if [[ -n $ADMIN_IP && -n $expected && $port != "$expected" ]]; then
+        fail "Текущий SSH-сеанс использует порт $expected. Укажите его или нажмите Enter."
         return 1
     fi
-    # shellcheck disable=SC2034 # Used by save_secret in common.sh.
-    NEW_NODE_SECRET=$answer
+    printf '%s\n' "$port"
 }
 
 show_panel_help() {
     info "В панели Remnawave адрес ноды — $NODE_DOMAIN, служебный порт — $NODE_PORT."
+    info 'Если карточка создания открыта, нажмите «Далее», выберите профиль и нажмите «Создать».'
     if [[ $ENABLE_SELFSTEAL == yes ]]; then selfsteal_panel_help; fi
     info 'Проверьте статус ноды и подключение тестового клиента в панели.'
 }
@@ -72,7 +118,8 @@ apply_installation() {
 }
 
 install_wizard() {
-    local scope='config network node' raw port continue_apply detected_port
+    local scope='config network node' continue_apply detected_port
+    local components='UFW, Fail2Ban'
     local old_domain='' old_panel='' old_port=2222 old_admin='' old_ssh='' old_selfsteal=no old_bbr=no old_traffic=no
     apt_install_missing ca-certificates curl python3 iproute2 || return
     get_admin_ip || return
@@ -88,38 +135,61 @@ install_wizard() {
         old_traffic=$ENABLE_TRAFFIC_GUARD
     fi
 
-    info 'В панели Remnawave откройте Nodes → Management и добавьте ноду.'
-    info 'Из сгенерированного Compose понадобятся NODE_PORT и SECRET_KEY.'
-    NODE_DOMAIN=$(prompt 'Домен ноды' "$old_domain") || return
-    NODE_DOMAIN=${NODE_DOMAIN,,}
-    NODE_DOMAIN=${NODE_DOMAIN%.}
-    valid_domain "$NODE_DOMAIN" || { fail 'Укажите полное доменное имя ноды.'; return 1; }
-    port=$(prompt 'Служебный порт ноды из панели' "$old_port") || return
-    valid_port "$port" || { fail 'Некорректный порт ноды.'; return 1; }
-    NODE_PORT=$port
-    raw=$(prompt 'Исходящие IP панели через пробел' "$old_panel") || return
-    PANEL_IPS=$(normalize_ips "$raw") || return
-    [[ -n $PANEL_IPS ]] || { fail 'Укажите хотя бы один IP панели.'; return 1; }
-    detected_port=$(detect_ssh_port "$old_ssh") || return
-    port=$(prompt 'Действующий SSH-порт VPS' "${detected_port:-${old_ssh:-22}}") || return
-    valid_port "$port" || { fail 'Некорректный порт SSH.'; return 1; }
-    if [[ -n $ADMIN_IP && -n $detected_port && $port != "$detected_port" ]]; then
-        fail "Текущая SSH-сессия использует порт $detected_port."
-        return 1
-    fi
-    SSH_PORT=$port
-    raw=$(prompt 'Доверенные IP или подсети администратора для Fail2Ban и TrafficGuard' "${old_admin:-$ADMIN_IP}") || return
-    ADMIN_IPS=$(normalize_ips "$raw" network) || return
+    ui_step 1 'Домен ноды'
+    info '  В кабинете хостинга найдите публичный IPv4 этого VPS.'
+    info '  У DNS-провайдера создайте A-запись и укажите в ней этот IP.'
+    info '  Пример поддомена для ноды — node.example.com.'
+    info '  Для self-steal в Cloudflare выберите режим DNS only.'
+    printf '\n'
+    NODE_DOMAIN=$(wizard_input 'Поддомен ноды' "$old_domain" check_node_domain) || return
 
+    ui_step 2 'Служебный порт ноды'
+    info '  В панели Remnawave откройте Ноды → Управление (Nodes → Management) → +.'
+    info "  В поле «Домен или IP» введите $NODE_DOMAIN."
+    info '  Возьмите номер из Node Port или скопируйте docker-compose.yml.'
+    info '  В блоке environment найдите строку NODE_PORT=2222.'
+    info '  По этому порту панель управляет нодой. Вставьте число или всю строку.'
+    printf '\n'
+    NODE_PORT=$(wizard_input 'NODE_PORT из панели' "$old_port" check_node_port) || return
+
+    ui_step 3 'Исходящий IP панели'
+    info '  Откройте SSH на сервере, где установлена панель Remnawave.'
+    info '  Посмотрите, с какого публичного IPv4 этот сервер выходит в сеть.'
+    info '  curl -4fsS https://api.ipify.org && echo'
+    info '  Вставьте полученный IP сюда. Несколько адресов введите через пробел.'
+    printf '\n'
+    PANEL_IPS=$(wizard_input 'IP панели' "$old_panel" check_panel_ips) || return
+
+    ui_step 4 'Доступ по SSH'
+    detected_port=$(detect_ssh_port "$old_ssh") || return
+    info '  Укажите порт, по которому подключились к этому VPS. Обычно это 22.'
+    SSH_PORT=$(wizard_input 'SSH-порт VPS' "${detected_port:-22}" check_ssh_port "$detected_port") || return
+    printf '\n'
+    info '  Доверенный IP — адрес, с которого вы подключаетесь по SSH.'
+    info '  Fail2Ban пропускает доверенные адреса.'
+    info '  TrafficGuard проверяет, что их нет в списке блокировки.'
+    if [[ -n $ADMIN_IP ]]; then
+        info "  IP текущего SSH-сеанса — $ADMIN_IP. Enter оставит показанное значение."
+    else
+        info '  Введите свой публичный IP. Для TrafficGuard он нужен обязательно.'
+    fi
+    ADMIN_IPS=$(wizard_input 'Доверенные IP или подсети' "${old_admin:-$ADMIN_IP}" normalize_ips network) || return
+
+    ui_step 5 'Дополнительные компоненты'
     ENABLE_SELFSTEAL=$old_selfsteal
     if [[ $ENABLE_SELFSTEAL == no ]]; then
-        ENABLE_SELFSTEAL=$(yes_no 'Добавить self-steal с Caddy?' y) || return
+        info '  Self-steal на Caddy — локальный HTTPS-сайт для VLESS REALITY.'
+        ENABLE_SELFSTEAL=$(yes_no '  Установить self-steal?' y) || return
     fi
     ENABLE_BBR=$old_bbr
-    if [[ $ENABLE_BBR == no ]]; then ENABLE_BBR=$(yes_no 'Включить BBR и fq?' y) || return; fi
+    if [[ $ENABLE_BBR == no ]]; then
+        info '  BBR и fq — настройки передачи TCP, если их поддерживает ядро.'
+        ENABLE_BBR=$(yes_no '  Включить BBR и fq?' y) || return
+    fi
     ENABLE_TRAFFIC_GUARD=$old_traffic
     if [[ $ENABLE_TRAFFIC_GUARD == no ]]; then
-        ENABLE_TRAFFIC_GUARD=$(yes_no 'Добавить TrafficGuard со списком известных сканеров?' n) || return
+        info '  TrafficGuard блокирует адреса из списка известных сканеров.'
+        ENABLE_TRAFFIC_GUARD=$(yes_no '  Включить TrafficGuard?' n) || return
     fi
     if [[ $ENABLE_TRAFFIC_GUARD == yes && -z ${ADMIN_IP:-}${ADMIN_IPS:-} ]]; then
         fail 'Для TrafficGuard укажите доверенный IP или подсеть администратора.'
@@ -132,11 +202,32 @@ install_wizard() {
         scope+=' selfsteal'
     fi
     if [[ $ENABLE_BBR == yes ]]; then scope+=' bbr'; fi
+
+    ui_step 6 'Ключ подключения ноды'
+    info '  Вверху карточки ноды скопируйте значение Secret Key (SECRET_KEY).'
+    info '  Можно также вставить строку SECRET_KEY из блока environment'
+    info '  в файле, который выдаёт «Скопировать docker-compose.yml».'
+    info '  Ввод скрыт. После вставки нажмите Enter.'
+    printf '\n'
     ask_secret || return
-    info "UFW разрешит SSH TCP $SSH_PORT, VPN TCP 443 и служебный TCP $NODE_PORT только от панели."
-    if [[ $ENABLE_SELFSTEAL == yes ]]; then info 'Caddy дополнительно использует публичный TCP 80.'; fi
-    continue_apply=$(yes_no 'Применить настройки?' n) || return
+
+    ui_step 7 'Проверка перед установкой'
+    printf '  %s\n' "Нода             $NODE_DOMAIN" "Панель           $PANEL_IPS" \
+        "Порт для панели  TCP $NODE_PORT" "Доступ по SSH    TCP $SSH_PORT" 'Доступ к VPN     TCP 443'
+    if [[ $ENABLE_SELFSTEAL == yes ]]; then
+        info '  Сертификат       TCP 80'
+        components+=', self-steal'
+    fi
+    if [[ $ENABLE_BBR == yes ]]; then components+=', BBR'; fi
+    if [[ $ENABLE_TRAFFIC_GUARD == yes ]]; then components+=', TrafficGuard'; fi
+    info "  Компоненты       $components"
+    printf '\n'
+    info '  Служебный порт откроется только для указанных IP панели.'
+    info '  После установки откройте второе SSH-подключение.'
+    info '  В нём выполните sudo remna-node-setup confirm.'
+    continue_apply=$(yes_no '  Начать установку?' n) || return
     [[ $continue_apply == yes ]] || { info 'Установка отменена.'; return 0; }
+    ui_screen 'Установка ноды  /  Применение настроек'
     node_prepare_image && prepare_security || return
     run_change "$scope" apply_installation
 }
@@ -283,54 +374,3 @@ dispatch() (
         *) usage >&2; return 2 ;;
     esac
 )
-
-MENU_ACTIONS=(
-    'Установить ноду и компоненты|install'
-    'Добавить self-steal|selfsteal'
-    'UFW и Fail2Ban|security'
-    'Включить BBR и fq|bbr'
-    'Включить или обновить TrafficGuard|update traffic-guard'
-    'Статус|status'
-    'Диагностика|doctor'
-    'Логи ноды|logs'
-    'Сохранить снимок|backup'
-    'Восстановить снимок|restore'
-    'Обновить скрипт|update tool'
-    'Обновить ноду|update node'
-    'Откатить версию скрипта|rollback tool'
-    'Откатить ожидающие сетевые изменения|rollback'
-    'Подтвердить сетевые настройки|confirm'
-)
-
-show_menu() {
-    local index choice line id
-    local -a command=()
-    while true; do
-        info "Remna Node Setup $(version_get version)"
-        index=0
-        for line in "${MENU_ACTIONS[@]}"; do
-            ((index += 1))
-            printf '%2d. %s\n' "$index" "${line%%|*}"
-        done
-        info ' 0. Выйти'
-        choice=$(prompt 'Выберите пункт') || return 0
-        if [[ $choice == 0 ]]; then return 0; fi
-        if [[ ! $choice =~ ^[1-9][0-9]?$ ]] || (( choice > ${#MENU_ACTIONS[@]} )); then
-            warn 'Нет такого пункта.'
-            continue
-        fi
-        line=${MENU_ACTIONS[choice-1]}
-        read -r -a command <<< "${line#*|}"
-        if [[ ${command[0]} == restore ]]; then
-            find "$BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -r
-            id=$(prompt 'Идентификатор снимка') || return 0
-            command+=("$id")
-        fi
-        dispatch "${command[@]}" || warn 'Команда завершилась с ошибкой.'
-        if [[ ${command[*]} == 'update tool' || ${command[*]} == 'rollback tool' ]]; then
-            info 'Откройте меню снова, чтобы использовать выбранную версию.'
-            return
-        fi
-        printf '\n'
-    done
-}

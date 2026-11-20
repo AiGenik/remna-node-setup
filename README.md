@@ -6,10 +6,10 @@
 
 Приготовьте домен ноды, IP-адреса, с которых панель подключается к ноде, и параметры `NODE_PORT` и `SECRET_KEY` из панели.
 
-На VPS выполните команду для релиза 0.1.1.
+На VPS выполните команду для релиза 0.1.2.
 
 ```bash
-f=$(mktemp) && curl -fsSL https://raw.githubusercontent.com/AiGenik/remna-node-setup/v0.1.1/install.sh -o "$f" && sudo bash "$f" AiGenik/remna-node-setup v0.1.1 && rm -f "$f" && sudo remna-node-setup
+f=$(mktemp) && curl -fsSL https://raw.githubusercontent.com/AiGenik/remna-node-setup/v0.1.2/install.sh -o "$f" && sudo bash "$f" AiGenik/remna-node-setup v0.1.2 && rm -f "$f" && sudo remna-node-setup
 ```
 
 Для установки из локальной папки с исходниками используйте следующие команды.

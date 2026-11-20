@@ -11,6 +11,8 @@ NODE_SECRET=$CONFIG_DIR/node.secret
 
 # shellcheck source=lib/common.sh
 source "$PROJECT_DIR/lib/common.sh"
+# shellcheck source=lib/ui.sh
+source "$PROJECT_DIR/lib/ui.sh"
 # shellcheck source=lib/release.sh
 source "$PROJECT_DIR/lib/release.sh"
 # shellcheck source=lib/node.sh
@@ -80,6 +82,7 @@ if [[ ${1-} == __network-timeout ]]; then
     exit
 fi
 
+ui_init
 if (( $# == 0 )); then
     show_menu
     exit
