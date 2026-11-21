@@ -99,24 +99,28 @@ VPN_PORTS_SAVED=yes
 
 VPN_PORTS='9443/tcp 2443/udp 9444/tcp'
 MOCK_UFW_NUMBERED=$'[ 2] 443/tcp ALLOW IN Anywhere # remna-node-setup:vpn\n[ 3] 9444/tcp ALLOW IN Anywhere # manual\n[ 5] 443/tcp (v6) ALLOW IN Anywhere (v6) # remna-node-setup:vpn'
-MOCK_UFW_STORED=$'ufw allow 9444/tcp comment \'manual\'\nufw deny 9445/tcp comment \'manual\''
+MOCK_UFW_STORED=$'ufw allow 9444/tcp comment \'manual\'\nufw deny 9445/tcp comment \'manual\'\nufw allow from 198.51.100.8 to any port 2202 proto tcp'
 security_apply
 if security_allow_vpn_ports '9445/tcp' > /dev/null 2>&1; then exit 1; fi
 grep -Fqx -- '--force delete 5' "$log"
 grep -Fqx -- '--force delete 2' "$log"
-grep -Fqx 'prepend allow in proto tcp to any port 2202 comment remna-node-setup:ssh' "$log"
 grep -Fqx 'prepend deny in proto tcp to any port 3003 comment remna-node-setup:node' "$log"
 grep -Fqx 'prepend allow in proto tcp from 192.0.2.3 to any port 3003 comment remna-node-setup:panel' "$log"
 grep -Fqx 'prepend allow in proto tcp from 2001:db8::3 to any port 3003 comment remna-node-setup:panel' "$log"
 grep -Fqx 'prepend allow in proto tcp to any port 80 comment remna-node-setup:acme' "$log"
 grep -Fqx 'allow in proto tcp to any port 9443 comment remna-node-setup:vpn' "$log"
 grep -Fqx 'allow in proto udp to any port 2443 comment remna-node-setup:vpn' "$log"
-if grep -Eq -- 'delete 3|port (443|8443|9444|9445) |--force enable|default deny' "$log"; then exit 1; fi
+if grep -Eq -- 'delete 3|port (443|2202|8443|9444|9445) |--force enable|default deny' "$log"; then exit 1; fi
 
 mkdir -p "$STATE_DIR/traffic-guard"
 printf '0.0.5\n' > "$STATE_DIR/traffic-guard/version"
 MOCK_UFW_DEFAULT=allow
 MOCK_TRAFFIC_GUARD=yes
+: > "$log"
+security_check_guard_addresses() { :; }
+if security_apply; then exit 1; fi
+if grep -Fqx 'default deny incoming' "$log"; then exit 1; fi
+MOCK_UFW_STORED=
 : > "$log"
 security_apply
 grep -Fqx 'default deny incoming' "$log"

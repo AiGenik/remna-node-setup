@@ -79,7 +79,7 @@ standalone_security
 load_host_settings
 [[ $SSH_PORT == 2202 && $ADMIN_IPS == 192.0.2.7 && $ENABLE_BBR == yes ]]
 [[ $(< "$CONFIG_DIR/scope") == 'config network' ]]
-grep -Fqx 'prepend allow in proto tcp to any port 2202 comment remna-node-setup:ssh' "$CONFIG_DIR/ufw.log"
+grep -Fqx 'allow in proto tcp to any port 2202 comment remna-node-setup:ssh' "$CONFIG_DIR/ufw.log"
 if grep -Eq '(port (80|443) |remna-node-setup:(panel|node|vpn))' "$CONFIG_DIR/ufw.log"; then exit 1; fi
 
 : > "$CONFIG_DIR/ufw.log"
@@ -114,3 +114,6 @@ printf '%s\n' 'Standalone-компоненты, настройки и облас
 "$PROJECT_DIR/tests/vpn-ports.sh"
 "$PROJECT_DIR/tests/apt-packages.sh"
 "$PROJECT_DIR/tests/traffic-guard-updates.sh"
+bash "$PROJECT_DIR/tests/node-image-updates.sh"
+bash "$PROJECT_DIR/tests/diagnostics.sh"
+bash "$PROJECT_DIR/tests/network-rollback.sh"

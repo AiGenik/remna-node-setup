@@ -70,6 +70,14 @@ remote_target=$(readlink -- "$RELEASE_ROOT/current")
 release_update
 [[ "$(readlink -- "$RELEASE_ROOT/previous")" == "$local_target" ]]
 
+fixture_archive 0.1.0
+if release_update >/dev/null 2>&1; then
+    printf 'Обновление latest понизило версию.\n' >&2
+    exit 1
+fi
+[[ "$(readlink -- "$RELEASE_ROOT/current")" == "$remote_target" ]]
+
+fixture_archive 0.1.1
 printf 'повреждение\n' >> "$fixture/$RELEASE_ARCHIVE"
 if release_update >/dev/null 2>&1; then
     printf 'Повреждённый архив принят.\n' >&2

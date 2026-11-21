@@ -10,11 +10,13 @@ ui_init() {
     UI_WARN=
     UI_DANGER=
     UI_RESET=
+    UI_LOGO='o-[+]-o'
     UI_VERSION=$(version_get version) || return
     if [[ -t 0 && -t 1 && -t 2 ]]; then
         UI_INTERACTIVE=yes
         if [[ -n ${TERM:-} && $TERM != dumb ]]; then
             UI_CLEAR=yes
+            UI_LOGO='●─[◆]─●'
             UI_BOLD=$'\033[1m'
             UI_RESET=$'\033[0m'
             if [[ -z ${NO_COLOR+x} ]]; then
@@ -48,7 +50,8 @@ ui_screen() {
     else
         printf '\n'
     fi
-    printf '  %s◆─●  REMNA NODE SETUP%s  %sv%s%s\n' "${UI_ACCENT:-$UI_BOLD}" "$UI_RESET" "$UI_MUTED" "$UI_VERSION" "$UI_RESET"
+    printf '  %s%s  REMNA NODE SETUP%s  %sv%s%s\n' \
+        "${UI_ACCENT:-$UI_BOLD}" "$UI_LOGO" "$UI_RESET" "$UI_MUTED" "$UI_VERSION" "$UI_RESET"
     if (( UI_RULE_WIDTH >= 10 )); then
         printf -v line '%*s' "$UI_RULE_WIDTH" ''
         printf '  %s%s%s\n' "$UI_MUTED" "${line// /─}" "$UI_RESET"
@@ -71,14 +74,15 @@ ui_attention() {
 }
 
 ui_network_confirmation() {
-    local remaining
+    local remaining mode=${1-}
     remaining=$(network_rollback_remaining) || remaining=
     ui_attention '● Сеть ждёт подтверждения SSH'
-    ui_attention 'Оставьте этот сеанс открытым. Подключитесь по SSH в новом.'
-    ui_attention 'Выполните sudo remna-node-setup confirm или [6] → [3].'
+    if [[ $mode != menu ]]; then ui_attention 'Оставьте этот SSH-сеанс открытым.'; fi
+    ui_attention 'В новом SSH-сеансе [6] → [3] или'
+    ui_attention 'sudo remna-node-setup confirm'
     case "$remaining" in
-        '') ui_attention 'Без подтверждения настройки откатятся автоматически.' ;;
-        0) ui_attention 'Срок подтверждения истёк. Проверьте состояние сети.' ;;
+        '') ui_attention 'Без подтверждения будет автооткат.' ;;
+        0) ui_attention 'Срок истёк. Проверьте состояние сети.' ;;
         *) ui_attention "Автооткат через $((remaining / 60)) мин $((remaining % 60)) с." ;;
     esac
 }
@@ -173,7 +177,10 @@ ui_install_phase() {
 
 ui_menu_status() (
     local page=$1 configured='Нода ещё не настроена' address mark='○'
-    if [[ $page == main ]]; then
+    if [[ -s ${PENDING_FILE:-} ]]; then
+        ui_network_confirmation menu
+        printf '\n'
+    elif [[ $page == main ]]; then
         if load_config 2>/dev/null; then
             configured='Настройки ноды сохранены'
             mark='●'
@@ -184,12 +191,8 @@ ui_menu_status() (
         elif [[ -s ${CONFIG_DIR:-/etc/remna-node-setup}/host.json ]]; then
             configured='Компоненты настроены · ноды пока нет'
         fi
-        printf '  %s%s  %s%s\n' "$UI_MUTED" "$mark" "$configured" "$UI_RESET"
+        printf '  %s%s  %s%s\n\n' "$UI_MUTED" "$mark" "$configured" "$UI_RESET"
     fi
-    if [[ -s ${PENDING_FILE:-} ]]; then
-        ui_network_confirmation
-    fi
-    if [[ $page == main || -s ${PENDING_FILE:-} ]]; then printf '\n'; fi
 )
 
 ui_menu_key() {
@@ -198,19 +201,18 @@ ui_menu_key() {
 
 ui_preparation() {
     ui_screen 'Подготовка к установке'
-    ui_section 'DNS'
-    info '  A-запись node.example.com → публичный IPv4 VPS.'
-    info '  Для self-steal в Cloudflare выберите DNS only.'
+    ui_section 'Адрес ноды'
+    info '  IP VPS или домен с A-записью на IP.'
+    info '  Для self-steal нужен домен.'
+    info '  В Cloudflare выберите DNS only.'
     printf '\n'
     ui_section 'Панель Remnawave'
-    info '  Ноды → Управление → +'
-    info '  Укажите домен или IP ноды. Скопируйте Node Port и Secret Key.'
+    info '  Ноды → Управление → + → адрес ноды'
+    info '  Скопируйте Node Port и Secret Key.'
     printf '\n'
-    ui_section 'IP панели'
-    info '  Выполните на сервере панели'
-    info '  curl -4fsS https://api.ipify.org && echo'
-    printf '\n'
-    info '  Оставьте открытым текущее SSH-подключение к новому VPS.'
+    ui_section 'IP панели для UFW'
+    info '  Выполните на VPS панели'
+    info '  curl -4fsS https://api.ipify.org'
 }
 
 select_selfsteal_server() {
@@ -234,34 +236,34 @@ select_selfsteal_server() {
 }
 
 MENU_ACTIONS=(
-    'main|1|Только нода|Docker и подключение к панели|install node-only'
-    'main|2|Нода и компоненты|Self-steal, BBR и защита|install'
-    'main|3|Порты и защита||@components'
-    'main|4|Диагностика||@diagnostics'
-    'main|5|Обновления||@updates'
-    'main|6|Снимки и восстановление||@recovery'
-    'main|7|Где взять данные для установки||guide'
-    'components|1|Настроить self-steal|Caddy или Nginx|selfsteal'
-    'components|2|Входящие порты|Правила UFW и защита SSH через Fail2Ban|security'
-    'components|3|Включить BBR и fq|Настройки TCP, если их поддерживает ядро|bbr'
-    'components|4|TrafficGuard|Включить или обновить список сканеров|update traffic-guard'
-    'diagnostics|1|Статус|Нода и установленные компоненты|status'
-    'diagnostics|2|Проверить сервисы|Порты, компоненты и место на диске|doctor'
-    'diagnostics|3|Логи ноды|Последние сообщения контейнера|logs'
-    'diagnostics|4|Проверить DNS домена|Записи A/AAAA и IP VPS|dns'
-    'recovery|1|Сохранить снимок|Создать резервную копию конфигурации|backup'
-    'recovery|2|Восстановить снимок|Выбрать сохранённую конфигурацию|restore'
-    'recovery|3|Подтвердить сетевые настройки|Открыть этот пункт из нового SSH-сеанса|confirm'
-    'recovery|4|Откатить сетевые изменения|Восстановить конфигурацию до подтверждения|rollback'
-    'updates|1|Обновить скрипт|Установить последний релиз с GitHub|update tool'
-    'updates|2|Обновить ноду|Применить образ из текущего релиза|update node'
-    'updates|3|Откатить версию скрипта|Вернуться к предыдущему релизу|rollback tool'
-    'updates|4|Обновить системные пакеты|Nginx, Caddy, Certbot, UFW, Fail2Ban и Docker|update packages'
-    'updates|5|Обновить TrafficGuard и список сканеров|Стабильная версия и база из официальных репозиториев|update traffic-guard'
+    'main|1|Только нода|install node-only'
+    'main|2|Нода и компоненты|install'
+    'main|3|Порты и защита|@components'
+    'main|4|Диагностика|@diagnostics'
+    'main|5|Обновления|@updates'
+    'main|6|Снимки и восстановление|@recovery'
+    'main|7|Где взять данные для установки|guide'
+    'components|1|Self-steal · Caddy или Nginx|selfsteal'
+    'components|2|Входящие порты и защита SSH|security'
+    'components|3|Настроить TCP (BBR и fq)|bbr'
+    'components|4|TrafficGuard против сканеров|update traffic-guard'
+    'diagnostics|1|Статус ноды и компонентов|status'
+    'diagnostics|2|Проверка портов и сервисов|doctor'
+    'diagnostics|3|Логи ноды|logs'
+    'diagnostics|4|Проверить DNS домена|dns'
+    'recovery|1|Сохранить снимок|backup'
+    'recovery|2|Восстановить снимок|restore'
+    'recovery|3|Подтвердить сетевые настройки|confirm'
+    'recovery|4|Откатить сетевые изменения|rollback'
+    'updates|1|Обновить скрипт|update tool'
+    'updates|2|Обновить ноду|update node'
+    'updates|3|Откатить версию скрипта|rollback tool'
+    'updates|4|Обновить системные пакеты|update packages'
+    'updates|5|Обновить TrafficGuard|update traffic-guard'
 )
 
 show_menu() {
-    local page=main parent title heading choice row section index label detail action notice='' id snapshots
+    local page=main parent title heading choice row section index label action notice='' id snapshots
     local -a command=()
     while true; do
         case "$page" in
@@ -280,22 +282,22 @@ show_menu() {
 
         local -A labels=() actions=()
         for row in "${MENU_ACTIONS[@]}"; do
-            IFS='|' read -r section index label detail action <<< "$row"
+            IFS='|' read -r section index label action <<< "$row"
             [[ $section == "$page" ]] || continue
             labels[$index]=$label
             actions[$index]=$action
             if [[ $page == main ]]; then
                 case "$index" in
                     1) printf '  %sУСТАНОВКА%s\n' "$UI_BOLD" "$UI_RESET" ;;
-                    3) printf '\n  %sУПРАВЛЕНИЕ%s\n' "$UI_BOLD" "$UI_RESET" ;;
+                    3)
+                        if [[ $UI_COMPACT != yes ]]; then printf '\n'; fi
+                        printf '  %sУПРАВЛЕНИЕ%s\n' "$UI_BOLD" "$UI_RESET"
+                        ;;
                 esac
             fi
             ui_menu_key "$index" "$label"
-            if [[ -n $detail && $UI_COMPACT != yes ]]; then
-                printf '      %s%s%s\n' "$UI_MUTED" "$detail" "$UI_RESET"
-            fi
         done
-        printf '\n'
+        if [[ $UI_COMPACT != yes ]]; then printf '\n'; fi
         if [[ $page == main ]]; then
             printf '  %s[0] Выйти%s\n' "$UI_MUTED" "$UI_RESET"
         else
@@ -334,7 +336,7 @@ show_menu() {
         if [[ $action == restore ]]; then
             snapshots=$(find "$BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d -printf '  %f\n' | sort -r) || return
             if [[ -z $snapshots ]]; then
-                info '  Сохраните первый снимок через пункт «Сохранить снимок».'
+                info '  Сначала сохраните снимок в пункте [1].'
                 ui_pause 'вернуться в меню' || return 0
                 continue
             fi

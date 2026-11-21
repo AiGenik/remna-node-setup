@@ -201,29 +201,119 @@ _node_wait_ready() {
     fail "Нода не открыла локальный порт вовремя. Проверьте пункт «Логи»."
 }
 
-node_release_image() {
-    local image
-    image=$(version_get node_image) || return 1
-    if [[ ! $image =~ ^(docker\.io/)?remnawave/node(:[0-9]+\.[0-9]+\.[0-9]+)?@sha256:[a-f0-9]{64}$ ]]; then
-        fail "В релизе не указан проверенный образ remnawave/node по SHA-256."
-        return 1
-    fi
-    printf '%s\n' "$image"
+_node_pinned_image_version() {
+    local image=$1
+    [[ $image =~ ^(docker\.io/)?remnawave/node:v?([0-9]+\.[0-9]+\.[0-9]+)@sha256:[a-f0-9]{64}$ ]] || return 1
+    printf '%s\n' "${BASH_REMATCH[2]}"
 }
 
-node_prepare_image() {
-    local image
-    image=$(node_release_image) || return 1
-    node_prepare_docker || return 1
+_node_no_downgrade() {
+    local candidate=$1 current_image current_version
+    if _node_owned_config; then
+        current_image=$(jq -er '.services.remnanode.image' "$NODE_DIR/compose.yaml") || return 1
+        current_version=$(_node_pinned_image_version "$current_image") ||
+            { fail 'Не удалось подтвердить версию установленной ноды по Compose.'; return 1; }
+        if ! dpkg --compare-versions "$candidate" ge "$current_version"; then
+            fail "Релиз $candidate старше установленной версии $current_version. Понижение пропущено."
+            return 1
+        fi
+    fi
+}
+
+_node_metadata_get() {
+    curl -q --proto '=https' --fail --silent --show-error --connect-timeout 8 \
+        --max-time 25 --max-filesize 2097152 "$@"
+}
+
+_node_latest_tag() {
+    local release
+    release=$(_node_metadata_get --header 'Accept: application/vnd.github+json' \
+        https://api.github.com/repos/remnawave/node/releases/latest) ||
+        { fail 'Не удалось прочитать стабильный релиз Remnawave Node на GitHub.'; return 1; }
+    jq -er '
+        select(.draft == false and .prerelease == false)
+        | .tag_name | strings | select(test("^v?(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"))
+    ' <<< "$release" ||
+        { fail 'GitHub не вернул стабильный тег Remnawave Node.'; return 1; }
+}
+
+_node_registry_digest() (
+    local tag=$1 stage token declared computed
+    stage=$(mktemp -d) || return 1
+    trap 'rm -rf -- "$stage"' EXIT
+
+    token=$(_node_metadata_get --get --data-urlencode 'service=registry.docker.io' \
+        --data-urlencode 'scope=repository:remnawave/node:pull' https://auth.docker.io/token |
+        jq -er '.token | strings | select(test("^[A-Za-z0-9._~+/=-]+$"))') ||
+        { fail 'Не удалось получить открытый доступ к образу Remnawave Node в Docker Hub.'; return 1; }
+    if ! printf 'Authorization: Bearer %s\n' "$token" |
+        _node_metadata_get --header @- \
+            --header 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json' \
+            --dump-header "$stage/headers" --output "$stage/manifest" \
+            "https://registry-1.docker.io/v2/remnawave/node/manifests/$tag"; then
+        fail "Образ стабильного релиза $tag недоступен в Docker Hub."
+        return 1
+    fi
+    declared=$(awk 'tolower($1) == "docker-content-digest:" { sub(/\r$/, "", $2); print $2 }' "$stage/headers") ||
+        return 1
+    computed=$(sha256sum < "$stage/manifest") || return 1
+    if [[ ! $declared =~ ^sha256:[a-f0-9]{64}$ || $declared != "sha256:${computed%% *}" ]]; then
+        fail "Контрольная сумма манифеста образа $tag не совпала."
+        return 1
+    fi
+    if ! jq -e '
+        def has_linux($arch):
+            any(.manifests[];
+                .platform.os == "linux" and .platform.architecture == $arch and
+                (.mediaType == "application/vnd.oci.image.manifest.v1+json" or
+                 .mediaType == "application/vnd.docker.distribution.manifest.v2+json") and
+                (.digest | strings | test("^sha256:[a-f0-9]{64}$")));
+        .schemaVersion == 2 and
+        (.mediaType == "application/vnd.oci.image.index.v1+json" or
+         .mediaType == "application/vnd.docker.distribution.manifest.list.v2+json") and
+        (.manifests | type == "array") and has_linux("amd64") and has_linux("arm64")
+    ' "$stage/manifest" >/dev/null; then
+        fail "Манифест образа $tag не подтверждает Linux amd64 и arm64."
+        return 1
+    fi
+    printf '%s\n' "$declared"
+)
+
+node_release_image() {
+    local tag digest
+    tag=$(_node_latest_tag) || return 1
+    _node_no_downgrade "${tag#v}" || return 1
+    digest=$(_node_registry_digest "$tag") || return 1
+    printf 'remnawave/node:%s@%s\n' "$tag" "$digest"
+}
+
+_node_ensure_image_cached() {
+    local image=$1
     if ! _node_docker image inspect "$image" >/dev/null 2>&1; then
         _node_docker pull "$image" || return 1
     fi
 }
 
+node_prepare_image() {
+    local image=${1:-${NODE_SELECTED_IMAGE:-}} version
+    if [[ -z $image ]]; then image=$(node_release_image) || return 1; fi
+    version=$(_node_pinned_image_version "$image") ||
+        { fail 'Требуется стабильный образ remnawave/node с закреплённым SHA-256.'; return 1; }
+    _node_no_downgrade "$version" || return 1
+    node_prepare_docker || return 1
+    _node_ensure_image_cached "$image"
+}
+
 node_apply() {
-    local image
+    local image=${1:-${NODE_SELECTED_IMAGE:-}} version
     node_preflight || return 1
-    image=$(node_release_image) || return 1
+    if [[ -z $image ]]; then
+        image=$(node_release_image) || return 1
+        node_prepare_image "$image" || return 1
+    fi
+    version=$(_node_pinned_image_version "$image") ||
+        { fail 'Требуется стабильный образ remnawave/node с закреплённым SHA-256.'; return 1; }
+    _node_no_downgrade "$version" || return 1
     install -d -m 0700 "$NODE_DIR" || return 1
     _node_render_compose "$image" || return 1
     _node_compose config --quiet || return 1
@@ -233,11 +323,15 @@ node_apply() {
 }
 
 node_restore_runtime() {
-    local owner
+    local owner image
     if ! command -v docker >/dev/null; then
         return 0
     fi
     if _node_owned_config; then
+        image=$(jq -er '.services.remnanode.image' "$NODE_DIR/compose.yaml") || return 1
+        _node_pinned_image_version "$image" >/dev/null ||
+            { fail 'В снимке отсутствует закреплённый образ Remnawave Node.'; return 1; }
+        _node_ensure_image_cached "$image" || return 1
         _node_compose up --detach --pull never --no-build remnanode || return 1
         _node_wait_ready || return 1
         return 0
@@ -253,7 +347,7 @@ node_restore_runtime() {
 }
 
 node_status() {
-    local image port existing
+    local image version port existing
     if ! _node_owned_config; then
         existing=""
         if command -v docker >/dev/null; then
@@ -265,12 +359,14 @@ node_status() {
         else
             info "Управляемая нода не установлена."
         fi
+        if [[ ${1-} == required ]]; then return 1; fi
         return 0
     fi
     image=$(jq -er '.services.remnanode.image' "$NODE_DIR/compose.yaml") || return 1
+    version=$(_node_pinned_image_version "$image") || version='неизвестная версия'
     port=$(jq -er '.services.remnanode.environment.NODE_PORT' "$NODE_DIR/compose.yaml") || return 1
     if node_verify; then
-        info "Нода: работает, TCP $port, образ $image. Связь с панелью проверяется в панели."
+        info "Нода $version · TCP $port · работает."
     else
         warn "Нода: контейнер или служебный порт $port недоступен."
         return 1

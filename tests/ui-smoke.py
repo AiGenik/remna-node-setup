@@ -35,6 +35,7 @@ security_preflight() { :; }
 node_preflight() { :; }
 selfsteal_preflight() { :; }
 selfsteal_panel_help() { :; }
+node_release_image() { printf 'remnawave/node:3.4.6@sha256:%064d\n' 0; }
 node_prepare_image() {
     if [[ ${FAIL_IMAGE:-no} == yes ]]; then
         printf 'TEST-IMAGE-FAILED\n' >&2
@@ -78,22 +79,26 @@ ui_init
 
 
 class Terminal:
-    def __init__(self, mode="full", fail_image=False, rows=24, columns=80, pending=False):
+    def __init__(self, mode="full", fail_image=False, rows=24, columns=80, pending=False, no_color=False):
         self.mode = mode
         self.fail_image = fail_image
         self.rows = rows
         self.columns = columns
         self.pending = pending
+        self.no_color = no_color
 
     def __enter__(self):
         self.fd, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", self.rows, self.columns, 0, 0))
         self.output = b""
+        env = {**ENV, "EXPECTED_WEBSERVER": "nginx", "EXPECTED_MODE": self.mode,
+               "FAIL_IMAGE": "yes" if self.fail_image else "no",
+               "TEST_PENDING": "yes" if self.pending else "no"}
+        if self.no_color:
+            env["NO_COLOR"] = "1"
         self.process = subprocess.Popen(
             ["bash", "-c", FIXTURE, "ui-test", "show_menu"],
-            cwd=ROOT, env={**ENV, "EXPECTED_WEBSERVER": "nginx", "EXPECTED_MODE": self.mode,
-                           "FAIL_IMAGE": "yes" if self.fail_image else "no",
-                           "TEST_PENDING": "yes" if self.pending else "no"},
+            cwd=ROOT, env=env,
             stdin=slave, stdout=slave, stderr=slave,
         )
         os.close(slave)
@@ -142,9 +147,10 @@ def without_ansi(screen):
 
 with Terminal() as terminal:
     screen = without_ansi(terminal.expect("Номер пункта →"))
-    assert "◆─●  REMNA NODE SETUP" in screen
+    assert "●─[◆]─●  REMNA NODE SETUP" in screen
     assert "УСТАНОВКА" in screen and "УПРАВЛЕНИЕ" in screen
     assert "[1] Только нода" in screen and "[2] Нода и компоненты" in screen
+    assert "Docker и подключение к панели" not in screen
     terminal.enter("4")
     screen = terminal.expect("Номер пункта →")
     assert CLEAR in screen and "Диагностика".encode() in screen.split(CLEAR)[-1]
@@ -175,16 +181,16 @@ with Terminal() as terminal:
     screen = terminal.expect(f"Введено {len(compose)} симв.")
     assert KEY_MARKER.encode() not in screen
     terminal.enter()
-    terminal.expect("HTTPS-страница для REALITY? [Y/n]")
+    terminal.expect("Self-steal для REALITY? [Y/n]")
     terminal.enter()
     terminal.expect("Веб-сервер → [1]")
     terminal.enter("2")
-    terminal.expect("оптимизация TCP? [Y/n]")
-    terminal.enter("invalid")
+    terminal.expect("Включить BBR? [Y/n]")
+    terminal.enter("д")
     terminal.expect("Введите y или n.")
-    terminal.expect("оптимизация TCP? [Y/n]")
+    terminal.expect("Включить BBR? [Y/n]")
     terminal.enter("n")
-    terminal.expect("блокировка известных сканеров? [y/N]")
+    terminal.expect("Включить TrafficGuard? [y/N]")
     terminal.enter("n")
     terminal.expect("Порт SSH → [2202]")
     terminal.enter()
@@ -261,18 +267,44 @@ with Terminal("node-only", fail_image=True) as terminal:
     terminal.enter("0")
     assert terminal.process.wait(timeout=5) == 0
 
-with Terminal(rows=18, columns=42) as terminal:
-    screen = without_ansi(terminal.expect("Номер пункта →"))
-    assert "[1] Только нода" in screen and "Docker и подключение к панели" not in screen
-    terminal.enter("0")
-    assert terminal.process.wait(timeout=5) == 0
-
-with Terminal(pending=True) as terminal:
+with Terminal(rows=18, columns=42, pending=True) as terminal:
     screen = terminal.expect("Номер пункта →")
     assert "\x1b[1;91m● Сеть ждёт подтверждения SSH".encode() in screen
     visible = without_ansi(screen)
+    assert "[1] Только нода" in visible and "[7] Где взять данные для установки" in visible
+    assert "sudo remna-node-setup confirm" in visible and "Автооткат через 2 мин 3 с." in visible
+    assert len(visible.splitlines()) <= 18
+    assert all(len(line) < 42 for line in visible.splitlines())
+    for key, label in (
+        ("3", "[2] Входящие порты и защита SSH"),
+        ("4", "[2] Проверка портов и сервисов"),
+        ("5", "[5] Обновить TrafficGuard"),
+        ("6", "[3] Подтвердить сетевые настройки"),
+    ):
+        terminal.enter(key)
+        visible = without_ansi(terminal.expect("Номер пункта →").split(CLEAR)[-1])
+        assert label in visible
+        assert all(len(line) < 42 for line in visible.splitlines())
+        terminal.enter("0")
+        terminal.expect("Номер пункта →")
+    terminal.enter("7")
+    visible = without_ansi(terminal.expect("Enter — вернуться в меню").split(CLEAR)[-1])
+    assert "Скопируйте Node Port и Secret Key." in visible
+    assert len(visible.splitlines()) <= 18
+    assert all(len(line) < 42 for line in visible.splitlines())
+    terminal.enter()
+    terminal.expect("Номер пункта →")
+    terminal.enter("0")
+    assert terminal.process.wait(timeout=5) == 0
+
+with Terminal(pending=True, no_color=True) as terminal:
+    screen = terminal.expect("Номер пункта →")
+    visible = without_ansi(screen)
+    assert CLEAR in screen
+    assert set(re.findall(rb"\x1b\[([0-9;]+)m", screen)) == {b"0", b"1"}
+    assert "● Сеть ждёт подтверждения SSH" in visible
     assert "sudo remna-node-setup confirm" in visible and "Автооткат через 2 мин 3 с." in visible
     terminal.enter("0")
     assert terminal.process.wait(timeout=5) == 0
 
-print("Проверены мастер, прогресс, скрытый ввод и красное предупреждение об автооткате.")
+print("Проверены меню 80×24, меню 42×18, NO_COLOR, мастер, прогресс и скрытый ввод.")

@@ -191,13 +191,17 @@ selfsteal_status() {
     local name=Caddy
     if [[ $SELFSTEAL_SERVER == nginx ]]; then name=Nginx; fi
     if ! _selfsteal_caddy_owned_config && ! _selfsteal_nginx_owned_config; then
-        info "Self-steal: не установлен этим скриптом."
-        return 0
+        fail 'Отсутствует управляемый конфиг self-steal.'
+        return 1
     fi
     if selfsteal_verify; then
         info "Self-steal: $name отвечает на $_selfsteal_endpoint по HTTPS."
     else
         warn "Self-steal: $name или доверенный сертификат для $NODE_DOMAIN недоступен."
+        return 1
+    fi
+    if [[ $SELFSTEAL_SERVER == nginx ]] && ! nginx_selfsteal_renewal_active; then
+        fail 'Таймер продления сертификата Nginx не работает.'
         return 1
     fi
 }

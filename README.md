@@ -1,29 +1,29 @@
 # Remna Node Setup
 
-Русскоязычный мастер для новой ноды Remnawave на VPS с Ubuntu 24.04. Устанавливает Docker Compose, ноду, Caddy или Nginx для self-steal, UFW, Fail2Ban и по выбору TrafficGuard и BBR. Панель Remnawave должна уже работать.
+Мастер установки ноды Remnawave на Ubuntu 24.04. Нужна работающая панель Remnawave.
 
-## Быстрый старт
+## Новый VPS
 
-Приготовьте адрес новой ноды, `NODE_PORT` и `SECRET_KEY` из панели. Для настройки защиты также нужны исходящий IP панели и порты профиля Xray.
-
-На VPS выполните команду для релиза 0.4.0.
+Выполните на сервере. Команда установит последний стабильный релиз и откроет меню.
 
 ```bash
-f=$(mktemp) && curl -fsSL https://raw.githubusercontent.com/AiGenik/remna-node-setup/v0.4.0/install.sh -o "$f" && sudo bash "$f" AiGenik/remna-node-setup v0.4.0 && rm -f "$f" && sudo remna-node-setup
+f=$(mktemp) && curl -q -fsSLo "$f" --proto =https https://raw.githubusercontent.com/AiGenik/remna-node-setup/HEAD/install.sh && sudo bash "$f" && rm -f "$f"
 ```
 
-Для установки из локальной папки с исходниками используйте следующие команды.
+В панели откройте «Ноды → Управление → +». Приготовьте адрес VPS, Node Port и Secret Key.
+
+- **Только нода** — Docker и Remnawave Node.
+- **Нода и компоненты** — нода и защита, с выбором self-steal, BBR и TrafficGuard.
+
+После изменения firewall подтвердите доступ командой `sudo remna-node-setup confirm` из нового SSH-сеанса.
+
+## Уже установлен
 
 ```bash
-sudo ./install.sh --local
-sudo remna-node-setup
+sudo remna-node-setup update tool && sudo remna-node-setup
 ```
 
-В меню выберите «Только нода» или «Нода и компоненты». После сетевых изменений откройте новое SSH-подключение и выполните `sudo remna-node-setup confirm`. До подтверждения действует таймер отката на 10 минут.
-
-В разделе «Порты и защита» можно отдельно настроить входящие TCP/UDP-порты, self-steal, UFW с Fail2Ban, BBR и TrafficGuard. Диагностика проверяет DNS, слушающие порты Xray и разрешения UFW.
-
-В разделе «Обновления» доступны обновление установленных пакетов Nginx, Caddy, Certbot, UFW, Fail2Ban и Docker, а также обновление TrafficGuard и базы сканеров.
+В меню «Обновления» есть отдельные пункты для ноды, системных пакетов и базы TrafficGuard.
 
 - [Установка и подключение к панели](docs/Установка.md)
 - [Обновление, резервные копии и восстановление](docs/Эксплуатация.md)

@@ -5,6 +5,7 @@ RELEASE_ROOT=/opt/remna-node-setup
 RELEASE_COMMAND=/usr/local/bin/remna-node-setup
 RELEASE_LOCK=/run/lock/remna-node-setup.lock
 RELEASE_ARCHIVE=remna-node-setup.tar.gz
+RELEASE_DEFAULT_REPOSITORY=AiGenik/remna-node-setup
 
 release_error() {
     printf 'Ошибка: %s\n' "$*" >&2
@@ -80,6 +81,17 @@ release_curl() {
         --connect-timeout 10 --max-time 120 "$@"
 }
 
+release_check_latest_version() {
+    local candidate=$1 current version
+    current=$(release_get_optional_link "$RELEASE_ROOT/current") || return 1
+    [[ -n $current ]] || return 0
+    version=$(jq -er '.version | strings' "$current/versions.json") || return 1
+    release_is_version "$version" || return 1
+    if dpkg --compare-versions "$candidate" lt "$version"; then
+        release_error "В GitHub найдена версия $candidate, а установлена $version. Для возврата используйте rollback tool."
+    fi
+}
+
 release_fetch() {
     local repository=$1 requested_tag=$2 stage=$3 endpoint tag digest content
     release_check_inputs "$repository" "$requested_tag" || return 1
@@ -100,6 +112,7 @@ release_fetch() {
         release_error 'Ответ GitHub не соответствует запрошенному тегу.'
         return 1
     fi
+    if [[ -z "$requested_tag" ]]; then release_check_latest_version "${tag#v}" || return 1; fi
     digest=$(jq -er --arg name "$RELEASE_ARCHIVE" '
         [.assets[] | select(.name == $name)] | select(length == 1)
         | .[0].digest | strings | select(test("^sha256:[0-9a-f]{64}$"))
@@ -236,6 +249,7 @@ release_activate() {
 
 release_usage() {
     cat <<'USAGE'
+sudo bash install.sh
 sudo bash install.sh OWNER/REPO [vX.Y.Z]
 sudo ./install.sh --local
 USAGE
@@ -247,6 +261,7 @@ release_install_main() (
     case "${1:-}" in
         -h|--help) release_usage; return 0 ;;
         --local) [[ $# -eq 1 ]] || { release_usage >&2; return 2; } ;;
+        '') [[ $# -eq 0 ]] || { release_usage >&2; return 2; }; repository=$RELEASE_DEFAULT_REPOSITORY ;;
         *)
             if (( $# < 1 || $# > 2 )); then
                 release_usage >&2
@@ -276,8 +291,15 @@ release_install_main() (
         return 1
     fi
     if ! command -v jq >/dev/null || ! command -v curl >/dev/null; then
-        apt-get update || return 1
-        apt-get -o DPkg::Lock::Timeout=120 install -y jq curl ca-certificates || return 1
+        apt-get -o APT::Update::Error-Mode=any \
+            -o Acquire::AllowInsecureRepositories=false \
+            -o Acquire::AllowDowngradeToInsecureRepositories=false \
+            -o Acquire::AllowWeakRepositories=false update || return 1
+        DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 \
+            -o DPkg::Options::=--force-confold -o APT::Ignore-Hold=false \
+            -o APT::Get::allow-unauthenticated=false -o APT::Get::force-yes=false \
+            -o APT::Get::allow-downgrades=false -o APT::Get::allow-change-held-packages=false \
+            install -y --no-install-recommends --no-remove jq curl ca-certificates || return 1
     fi
 
     stage=$(release_create_stage) || return 1
@@ -302,4 +324,5 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     set -Eeuo pipefail
     umask 022
     release_install_main "$@"
+    if (( $# == 0 )) && [[ -t 0 && -t 1 ]]; then exec "$RELEASE_COMMAND"; fi
 fi

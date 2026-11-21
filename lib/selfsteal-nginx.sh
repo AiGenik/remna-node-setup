@@ -5,6 +5,11 @@
 _nginx_selfsteal_config=/etc/nginx/conf.d/remna-node-setup.conf
 _nginx_selfsteal_renewal=remna-node-setup-certbot
 
+nginx_selfsteal_renewal_active() {
+    systemctl is-enabled --quiet "$_nginx_selfsteal_renewal.timer" &&
+        systemctl is-active --quiet "$_nginx_selfsteal_renewal.timer"
+}
+
 _selfsteal_nginx_owned_config() {
     [[ -f $_nginx_selfsteal_config && ! -L $_nginx_selfsteal_config ]] &&
         grep -Fxq -- "$_selfsteal_marker" "$_nginx_selfsteal_config"

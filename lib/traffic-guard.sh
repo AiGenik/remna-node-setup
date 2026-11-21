@@ -250,6 +250,7 @@ traffic_guard_status() {
     local version_file="$STATE_DIR/traffic-guard/version" commit_file="$STATE_DIR/traffic-guard/list-commit"
     local commit suffix=''
     if [[ ! -f $version_file ]]; then
+        if [[ ${1-} == required ]]; then fail 'TrafficGuard включён в настройках, но не установлен.'; return 1; fi
         info "TrafficGuard выключен."
     elif traffic_guard_firewall_active; then
         if [[ -r $commit_file ]]; then
@@ -259,6 +260,7 @@ traffic_guard_status() {
         info "TrafficGuard $(< "$version_file") включён$suffix."
     else
         warn "TrafficGuard $(< "$version_file") установлен. Правила неактивны."
+        if [[ ${1-} == required ]]; then return 1; fi
     fi
 }
 

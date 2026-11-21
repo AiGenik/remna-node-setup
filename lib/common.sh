@@ -222,9 +222,10 @@ yes_no() {
     local answer choices='y/N'
     if [[ $2 == y ]]; then choices='Y/n'; fi
     while answer=$(prompt "$1 [$choices]"); do
-        case "${answer:-$2}" in
-            y|д|yes|да|Y|Д) printf 'yes\n'; return 0 ;;
-            n|н|no|нет|N|Н) printf 'no\n'; return 0 ;;
+        answer=${answer:-$2}
+        case "${answer,,}" in
+            y|yes) printf 'yes\n'; return 0 ;;
+            n|no) printf 'no\n'; return 0 ;;
         esac
         warn 'Введите y или n.'
         if [[ ${UI_INTERACTIVE:-no} != yes ]]; then return 1; fi

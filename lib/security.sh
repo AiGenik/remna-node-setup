@@ -1,9 +1,17 @@
 #!/usr/bin/env bash
 
-security_ufw_active() {
+security_ufw_state() {
     local status
     status=$(LC_ALL=C ufw status 2>/dev/null) || return 1
-    [[ ${status%%$'\n'*} == 'Status: active' ]]
+    case ${status%%$'\n'*} in
+        'Status: active') printf 'active\n' ;;
+        'Status: inactive') printf 'inactive\n' ;;
+        *) return 1 ;;
+    esac
+}
+
+security_ufw_active() {
+    [[ $(security_ufw_state) == active ]]
 }
 
 security_configured_vpn_ports() {
@@ -139,9 +147,10 @@ PY
 }
 
 security_remove_managed_ufw_rules() {
-    local rules number rule
+    local keep_ssh=${1:-no} rules number rule groups='ssh|panel|node|vpn|acme'
     local -a arguments=()
-    local stored_pattern="^ufw ((allow|deny) [0-9]+/(tcp|udp)|allow from [[:xdigit:].:/]+ to any port [0-9]+ proto tcp) comment '(remna-node-setup:(ssh|panel|node|vpn|acme))'$"
+    if [[ $keep_ssh == yes ]]; then groups='panel|node|vpn|acme'; fi
+    local stored_pattern="^ufw ((allow|deny) [0-9]+/(tcp|udp)|allow from [[:xdigit:].:/]+ to any port [0-9]+ proto tcp) comment '(remna-node-setup:($groups))'$"
 
     if ! security_ufw_active; then
         # Numbered rules are unavailable while UFW is disabled. Match only
@@ -163,10 +172,33 @@ security_remove_managed_ufw_rules() {
         [[ -n $number ]] || continue
         ufw --force delete "$number" || return 1
     done < <(
-        sed -nE 's/^\[ *([0-9]+)\].*# remna-node-setup:(ssh|panel|node|vpn|acme)([[:space:]]|$).*/\1/p' <<< "$rules" |
+        sed -nE "s/^\\[ *([0-9]+)\\].*# remna-node-setup:($groups)([[:space:]]|$).*/\\1/p" <<< "$rules" |
             sort -rn
     )
 }
+
+security_external_ufw_rules() {
+    local rules rule
+    local managed_rule=" comment 'remna-node-setup:(ssh|panel|node|vpn|acme)'$"
+    rules=$(LC_ALL=C ufw show added) || return 1
+    while IFS= read -r rule; do
+        if [[ $rule == 'ufw '* && ! $rule =~ $managed_rule ]]; then
+            printf 'yes\n'
+            return 0
+        fi
+    done <<< "$rules"
+    printf 'no\n'
+}
+
+security_check_guard_addresses() (
+    local stage
+    stage=$(mktemp -d "$STATE_DIR/.guard-addresses.XXXXXX") || return
+    trap 'rm -rf -- "$stage"' EXIT
+    ipset save SCANNERS-BLOCK-V4 > "$stage/v4" || return
+    ipset save SCANNERS-BLOCK-V6 > "$stage/v6" || return
+    awk '$1 == "add" {print $3}' "$stage/v4" "$stage/v6" > "$stage/networks" || return
+    traffic_guard_validate_list "$stage/networks" "$stage/expected" >/dev/null
+)
 
 security_allow_vpn_ports() {
     local selected=$1 rules entry port protocol
@@ -229,23 +261,35 @@ EOF_JAIL
 }
 
 security_apply() {
-    local panel_ip vpn_ports ufw_status ufw_was_active=no change_default=yes guard_was_active=no
+    local panel_ip vpn_ports ufw_state ufw_status external_rules change_default=yes guard_was_active=no
     local -a panel_addresses=()
     security_preflight || return 1
 
     vpn_ports=$(security_configured_vpn_ports) || return 1
     vpn_ports=$(security_normalize_vpn_ports "$vpn_ports") || return 1
-    if security_ufw_active; then
-        ufw_was_active=yes
+    ufw_state=$(security_ufw_state) || { fail 'Не удалось надёжно определить состояние UFW.'; return 1; }
+    external_rules=$(security_external_ufw_rules) || return
+    if [[ $ufw_state == active ]]; then
         ufw_status=$(LC_ALL=C ufw status verbose) || return 1
         if grep -Fq 'Default: deny (incoming),' <<< "$ufw_status"; then change_default=no; fi
         if [[ -n ${STATE_DIR:-} && -s $STATE_DIR/traffic-guard/version ]] &&
            traffic_guard_firewall_active; then
             guard_was_active=yes
+            security_check_guard_addresses ||
+                { fail 'Действующий TrafficGuard несовместим с выбранными доверенными адресами.'; return 1; }
         fi
     fi
-    security_remove_managed_ufw_rules || return 1
-    ufw prepend allow in proto tcp to any port "$SSH_PORT" comment remna-node-setup:ssh || return 1
+    if [[ $external_rules == yes ]]; then
+        if [[ $ufw_state != active || $change_default == yes ]]; then
+            fail 'Найдены правила администратора. Перед запуском настройте действующий UFW и проверьте SSH с политикой deny incoming.'
+            return 1
+        fi
+        info 'Существующая политика SSH сохранена.'
+    fi
+    security_remove_managed_ufw_rules "$external_rules" || return 1
+    if [[ $external_rules == no ]]; then
+        ufw allow in proto tcp to any port "$SSH_PORT" comment remna-node-setup:ssh || return 1
+    fi
     # A full UFW reload can clear runtime hooks, including TrafficGuard's.
     if [[ $change_default == yes ]]; then ufw default deny incoming || return 1; fi
     if [[ -n ${NODE_PORT:-} ]]; then
@@ -260,7 +304,7 @@ security_apply() {
         security_allow_acme || return 1
     fi
 
-    if [[ $ufw_was_active == no ]]; then ufw --force enable || return 1; fi
+    if [[ $ufw_state == inactive ]]; then ufw --force enable || return 1; fi
     security_ufw_active || { fail "UFW не активировался."; return 1; }
     if [[ $guard_was_active == yes ]] &&
        { [[ $change_default == yes ]] || ! traffic_guard_firewall_active; }; then

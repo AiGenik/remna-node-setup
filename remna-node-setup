@@ -49,7 +49,7 @@ Remna Node Setup
   remna-node-setup backup              Сохранить конфигурацию
   remna-node-setup restore ID          Восстановить снимок
   remna-node-setup update tool [vX.Y.Z] Обновить скрипт с GitHub
-  remna-node-setup update node          Обновить ноду из манифеста скрипта
+  remna-node-setup update node          Обновить до стабильной версии ноды
   remna-node-setup update packages [пакет] Обновить установленные пакеты через APT
   remna-node-setup update traffic-guard Обновить TrafficGuard и список сканеров
   remna-node-setup rollback tool        Вернуть предыдущую версию скрипта
@@ -60,7 +60,7 @@ HELP
 
 self_test() {
     local name
-    for name in node_apply node_verify node_restore_runtime selfsteal_apply selfsteal_verify \
+    for name in node_apply node_verify node_restore_runtime node_release_image selfsteal_apply selfsteal_verify \
         nginx_selfsteal_apply nginx_selfsteal_stop security_apply security_preflight security_detect_vpn_ports \
         apt_install_current apt_upgrade_installed_preview apt_upgrade_installed_apply \
         security_prompt_vpn_ports security_vpn_status security_os_updates_status bbr_apply traffic_guard_prepare traffic_guard_apply \
@@ -71,8 +71,7 @@ self_test() {
     done
     [[ -r $PROJECT_DIR/lib/secret-input.py ]] || { fail 'Модуль ввода ключа отсутствует.'; return 1; }
     [[ -r $PROJECT_DIR/lib/selfsteal-dns.py ]] || { fail 'Модуль проверки DNS отсутствует.'; return 1; }
-    jq -e 'type == "object" and (.version | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")) and
-           (.node_image | test("^remnawave/node:[^@]+@sha256:[a-f0-9]{64}$"))' "$PROJECT_DIR/versions.json" >/dev/null
+    jq -e 'type == "object" and (.version | test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))' "$PROJECT_DIR/versions.json" >/dev/null
 }
 
 case "${1-}" in
@@ -85,7 +84,7 @@ ensure_host
 install -d -m 0700 -- "$CONFIG_DIR" "$STATE_DIR" "$BACKUP_DIR"
 
 if [[ ${1-} == __network-timeout ]]; then
-    release_acquire_lock wait
+    release_acquire_lock nowait || exit 1
     rollback_pending "${2-}"
     exit
 fi

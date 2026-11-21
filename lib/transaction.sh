@@ -13,6 +13,8 @@ SNAPSHOT_BBR=(/etc/sysctl.d/90-remna-node-setup-bbr.conf)
 TG_UNITS=(antiscan-ipset-restore.service antiscan-move-rules.service)
 ROLLBACK_UNIT=remna-node-setup-rollback
 PENDING_FILE=$STATE_DIR/pending
+NETWORK_APPLY_LIMIT=480
+NETWORK_RESTORE_LIMIT=90
 
 path_snapshot() {
     local dir=$1 path
@@ -26,18 +28,36 @@ path_snapshot() {
 }
 
 path_restore() {
-    local dir=$1 path backup
+    local dir=$1 path backup stage parent
     shift
     for path in "$@"; do
         backup=$dir/files$path
-        if [[ ! -e $path && ! -L $path && ! -e $backup && ! -L $backup ]]; then
+        if [[ ! -e $backup && ! -L $backup ]]; then
+            rm -rf -- "$path" || return
             continue
         fi
-        rm -rf -- "$path" || return
-        if [[ -e $backup || -L $backup ]]; then
-            mkdir -p -- "${path%/*}" || return
-            cp -a -- "$backup" "$path" || return
+        parent=${path%/*}
+        mkdir -p -- "$parent" || return
+        stage=$(mktemp -d "$parent/.remna-restore.XXXXXX") || return
+        if ! cp -a -- "$backup" "$stage/replacement"; then
+            rm -rf -- "$stage"
+            return 1
         fi
+        if [[ ( -d $path && ! -L $path ) || ( -d $stage/replacement && ! -L $stage/replacement ) ]]; then
+            if [[ -e $path || -L $path ]] && ! mv -T -- "$path" "$stage/original"; then
+                rm -rf -- "$stage"
+                return 1
+            fi
+        fi
+        if ! mv -Tf -- "$stage/replacement" "$path"; then
+            if [[ -e $stage/original || -L $stage/original ]] && ! mv -T -- "$stage/original" "$path"; then
+                fail "Сохранённый перед восстановлением путь находится в $stage/original."
+                return 1
+            fi
+            rm -rf -- "$stage"
+            return 1
+        fi
+        rm -rf -- "$stage" || return
     done
 }
 
@@ -50,7 +70,10 @@ has_scope() {
 }
 
 capture_snapshot() {
-    local scope=$1 dir unit
+    local scope=$1 dir unit ufw_state origin
+    if has_scope "$scope" network; then
+        ufw_state=$(security_ufw_state) || { fail 'Не удалось надёжно определить состояние UFW. Сеть не изменена.'; return 1; }
+    fi
     dir=$(mktemp -d "$BACKUP_DIR/$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX") || return
     mkdir -- "$dir/files" || return
     if has_scope "$scope" config; then path_snapshot "$dir" "${SNAPSHOT_CONFIG[@]}" || return; fi
@@ -69,7 +92,7 @@ capture_snapshot() {
     fi
     if has_scope "$scope" network; then
         path_snapshot "$dir" "${SNAPSHOT_NETWORK[@]}" || return
-        if LC_ALL=C ufw status | grep -q '^Status: active'; then
+        if [[ $ufw_state == active ]]; then
             printf 'yes\n' > "$dir/ufw.active"
         else
             printf 'no\n' > "$dir/ufw.active"
@@ -80,7 +103,9 @@ capture_snapshot() {
             enabled "$unit" > "$dir/$unit.enabled" || return
         done
         traffic_guard_capture_runtime "$dir" || return
-        ssh_context > "$dir/initiator-ssh" || return
+        origin=$(ssh_context) || return
+        if [[ -z $origin ]] && ssh_transport_start >/dev/null; then origin=ssh; fi
+        printf '%s\n' "$origin" > "$dir/initiator-ssh" || return
     fi
     printf '%s\n' "$scope" > "$dir/scopes" || return
     printf '%s\n' "${dir##*/}"
@@ -154,7 +179,13 @@ restore_selfsteal_runtime() {
 }
 
 restore_network() {
-    local dir=$1 unit errors=0
+    local dir=$1 unit errors=0 ufw_active expected
+    ufw_active=$(< "$dir/ufw.active") || return
+    case $ufw_active in
+        yes) expected=active ;;
+        no) expected=inactive ;;
+        *) fail 'Снимок не содержит достоверного состояния UFW.'; return 1 ;;
+    esac
     if [[ $(active fail2ban.service) == yes ]]; then systemctl stop fail2ban.service || errors=1; fi
     for unit in "${TG_UNITS[@]}"; do
         if [[ $(active "$unit") == yes ]]; then systemctl stop "$unit" || errors=1; fi
@@ -163,14 +194,14 @@ restore_network() {
     path_restore "$dir" "${SNAPSHOT_NETWORK[@]}" || return
     systemctl daemon-reload || errors=1
     restore_step 'наборы TrafficGuard' traffic_guard_restore_before_ufw "$dir" || errors=1
-    if [[ $(< "$dir/ufw.active") == yes ]]; then
-        if LC_ALL=C ufw status | grep -q '^Status: active'; then
-            ufw reload || errors=1
-        else
-            ufw --force enable || errors=1
-        fi
+    if [[ $ufw_active == yes ]]; then
+        ufw --force enable || errors=1
     else
         ufw --force disable || errors=1
+    fi
+    if [[ $(security_ufw_state) != "$expected" ]]; then
+        warn 'Состояние UFW после восстановления не подтверждено.'
+        errors=1
     fi
     restore_step 'цепочки TrafficGuard' traffic_guard_restore_after_ufw "$dir" || errors=1
     for unit in "${TG_UNITS[@]}"; do
@@ -218,6 +249,131 @@ pending_id() {
     if [[ -r $PENDING_FILE ]]; then cat -- "$PENDING_FILE"; fi
 }
 
+network_boot_clock() {
+    python3 -c 'import os, time; print(time.clock_gettime_ns(time.CLOCK_BOOTTIME) * os.sysconf("SC_CLK_TCK") // 10**9)'
+}
+
+ssh_transport_start() {
+    # The privileged SSH transport is parent to its session channels. Using
+    # its kernel start time also catches a new channel reused via ControlMaster.
+    python3 - "$BASHPID" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+pid = int(sys.argv[1])
+session_start = None
+while pid > 1:
+    try:
+        process = Path(f"/proc/{pid}")
+        stat = (process / "stat").read_text()
+        end = stat.rfind(") ")
+        name = stat[stat.index("(") + 1:end]
+        fields = stat[end + 2:].split()
+        if name in ("sshd", "sshd-session"):
+            command = (process / "cmdline").read_bytes().split(b"\0", 1)[0]
+            start = int(fields[19])
+            if command.endswith(b" [priv]"):
+                session_start = start
+                break
+            if re.fullmatch(rb"(sshd|sshd-session): [^ ]+@(?:pts/\d+|notty)", command):
+                # Root sessions can use the transport process directly.
+                session_start = start
+        pid = int(fields[1])
+    except (IndexError, OSError, ValueError):
+        break
+if session_start is None or session_start < 0:
+    sys.exit(1)
+print(session_start)
+PY
+}
+
+network_mark_applied() {
+    local id=$1 boot clock
+    IFS= read -r boot < /proc/sys/kernel/random/boot_id || return
+    clock=$(network_boot_clock) || return
+    printf '%s %s\n' "$boot" "$clock" > "$BACKUP_DIR/$id/network-applied" || return
+}
+
+network_group_running() {
+    local group=$1 processes
+    kill -0 -- "-$group" 2>/dev/null || return 1
+    processes=$(ps -eo pgid=,stat=) || return 0
+    awk -v group="$group" '$1 == group && $2 !~ /^Z/ {live = 1} END {exit !live}' <<< "$processes"
+}
+
+network_stop_worker() {
+    local worker=$1 attempt
+    network_group_running "$worker" || return 0
+    kill -TERM -- "-$worker" 2>/dev/null || :
+    for ((attempt=0; attempt<15; attempt++)); do
+        network_group_running "$worker" || return 0
+        sleep 1
+    done
+    kill -KILL -- "-$worker" 2>/dev/null || :
+    for ((attempt=0; attempt<5; attempt++)); do
+        network_group_running "$worker" || return 0
+        sleep 1
+    done
+    ! network_group_running "$worker"
+}
+
+finish_network_worker() {
+    local result=$1 worker=$2 alarm=$3 timed_out=$4
+    trap - EXIT
+    trap '' INT TERM HUP
+    if ! network_stop_worker "$worker"; then
+        warn 'Изменяющий сеть процесс ещё работает. Откат будет ждать освобождения блокировки.'
+        result=125
+    fi
+    kill -TERM -- "-$alarm" 2>/dev/null || :
+    wait "$alarm" 2>/dev/null || :
+    if (( result != 125 )); then
+        wait "$worker" 2>/dev/null || :
+        if [[ -s $timed_out ]]; then
+            warn 'Операция не уложилась в отведённое время.'
+            result=124
+        fi
+    fi
+    rm -f -- "$timed_out"
+    exit "$result"
+}
+
+run_network_worker() (
+    local limit=$1 worker alarm timed_out result=0
+    shift
+    timed_out=$(mktemp "$STATE_DIR/.network-limit.XXXXXX") || return
+    # Both children get separate process groups. Only the mutating group
+    # inherits the operation lock, including any unfinished descendants.
+    set -m
+    (set +m; trap - EXIT INT TERM HUP; "$@") &
+    worker=$!
+    (
+        exec 9<&-
+        set +m
+        sleep "$limit"
+        printf 'timeout\n' > "$timed_out" || :
+        kill -TERM -- "-$worker" 2>/dev/null || exit 0
+        sleep 15
+        kill -KILL -- "-$worker" 2>/dev/null || :
+    ) &
+    alarm=$!
+    set +m
+    trap 'finish_network_worker "$?" "$worker" "$alarm" "$timed_out"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap 'exit 129' HUP
+    while network_group_running "$worker" && [[ ! -s $timed_out ]]; do
+        if ! network_group_running "$alarm"; then
+            warn 'Не удалось контролировать время выполнения. Останавливаю операцию.'
+            return 124
+        fi
+        sleep 0.25
+    done
+    if [[ ! -s $timed_out ]]; then wait "$worker" 2>/dev/null || result=$?; fi
+    return "$result"
+)
+
 arm_rollback() {
     local id=$1 unit_dir=/etc/systemd/system
     local manager=/usr/local/bin/remna-node-setup
@@ -229,7 +385,7 @@ Description=Remna Node Setup network rollback
 [Service]
 Type=oneshot
 ExecStart=$manager __network-timeout $id
-TimeoutStartSec=infinity
+TimeoutStartSec=3min
 Restart=on-failure
 RestartSec=30s
 UNIT
@@ -282,19 +438,31 @@ rollback_pending() {
     fi
     scope=$(< "$BACKUP_DIR/$id/scopes")
     info "Восстанавливаю снимок $id."
-    restore_snapshot "$id" "$scope" || { fail "Откат не завершён. Снимок сохранён в $BACKUP_DIR/$id."; return 1; }
+    run_network_worker "$NETWORK_RESTORE_LIMIT" restore_snapshot "$id" "$scope" ||
+        { fail "Откат не завершён. Снимок сохранён в $BACKUP_DIR/$id."; return 1; }
     disarm_rollback
 }
 
 confirm_network() {
-    local id original current
+    local id original current transport boot applied_boot applied_time
     id=$(pending_id) || return
     valid_snapshot_id "$id" || { fail 'Нет сетевых изменений для подтверждения.'; return 1; }
-    original=$(< "$BACKUP_DIR/$id/initiator-ssh")
-    if [[ -n $original ]]; then
-        current=$(ssh_context)
-        if [[ -z $current || $current == "$original" ]]; then
+    if ! read -r applied_boot applied_time < "$BACKUP_DIR/$id/network-applied" ||
+       ! [[ $applied_boot =~ ^[a-f0-9-]{36}$ && $applied_time =~ ^(0|[1-9][0-9]{0,17})$ ]] ||
+       ! IFS= read -r boot < /proc/sys/kernel/random/boot_id; then
+        fail 'Нет отметки о завершении сетевых изменений. Дождитесь отката.'
+        return 1
+    fi
+    original=$(< "$BACKUP_DIR/$id/initiator-ssh") || return
+    current=$(ssh_context) || return
+    transport=$(ssh_transport_start) || transport=
+    if [[ -n $original || -n $current || -n $transport ]]; then
+        if [[ ! $transport =~ ^[0-9]{1,18}$ || ( -n $current && $current == "$original" ) ]]; then
             fail 'Откройте новое подключение по SSH и повторите sudo remna-node-setup confirm.'
+            return 1
+        fi
+        if [[ $applied_boot == "$boot" ]] && (( transport <= applied_time )); then
+            fail 'Этот SSH-сеанс открыт до применения правил. Создайте новое соединение без ControlMaster.'
             return 1
         fi
     fi
@@ -307,7 +475,7 @@ finish_change() {
     trap - EXIT
     if [[ $changed == yes && $committed == no ]]; then
         warn 'Операция прервана. Восстанавливаю конфигурацию.'
-        if restore_snapshot "$id" "$scope"; then
+        if restore_interrupted_change "$id" "$scope"; then
             if has_scope "$scope" network; then disarm_rollback || result=1; fi
         else
             warn "Не все настройки удалось восстановить. Снимок $id сохранён."
@@ -316,8 +484,17 @@ finish_change() {
     exit "$result"
 }
 
+restore_interrupted_change() {
+    local id=$1 scope=$2
+    if has_scope "$scope" network; then
+        run_network_worker "$NETWORK_RESTORE_LIMIT" restore_snapshot "$id" "$scope"
+    else
+        restore_snapshot "$id" "$scope"
+    fi
+}
+
 run_change() (
-    local scope=$1 id changed=no committed=no
+    local scope=$1 id changed=no committed=no result=0
     shift
     id=$(capture_snapshot "$scope") || return
     info "Снимок $id."
@@ -331,7 +508,16 @@ run_change() (
         return 1
     fi
     changed=yes
-    "$@" || return
+    if has_scope "$scope" network; then
+        run_network_worker "$NETWORK_APPLY_LIMIT" "$@" || result=$?
+        # Another process in this group may still own the lock. Never restore
+        # over a worker that could still finish a write.
+        if (( result == 125 )); then changed=no; fi
+        if (( result != 0 )); then return "$result"; fi
+        network_mark_applied "$id" || return
+    else
+        "$@" || return
+    fi
     committed=yes
     if has_scope "$scope" network; then
         ui_network_confirmation

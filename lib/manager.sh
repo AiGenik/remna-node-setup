@@ -107,7 +107,8 @@ check_panel_ips() {
 }
 
 ask_panel_ips() {
-    info '  На сервере панели выполните curl -4fsS https://api.ipify.org && echo' >&2
+    info '  Узнайте IP на сервере панели.' >&2
+    info '  curl -4fsS https://api.ipify.org' >&2
     wizard_input 'IP панели' "$1" check_panel_ips
 }
 
@@ -124,8 +125,8 @@ check_ssh_port() {
 show_panel_help() {
     printf '\n'
     ui_section 'Завершите в Remnawave'
-    info "  Ноды → Управление → $NODE_DOMAIN · Node Port $NODE_PORT"
-    info '  Выберите Config Profile, сохраните ноду и проверьте подключение.'
+    info '  Ноды → Управление → выберите профиль.'
+    info '  Сохраните ноду и проверьте подключение.'
     if [[ $ENABLE_SELFSTEAL == yes ]]; then
         selfsteal_panel_help
     elif [[ $ENABLE_SECURITY == yes && -n $VPN_PORTS ]]; then
@@ -137,12 +138,12 @@ show_panel_help() {
 }
 
 apply_installation() {
-    local mode=$1 traffic_stage=$2
+    local mode=$1 image=$2 traffic_stage=$3
     save_config && save_secret || return
     if [[ $mode == full ]]; then
         ui_install_phase security_apply_current || return
     fi
-    ui_install_phase node_apply || return
+    ui_install_phase node_apply "$image" || return
     if [[ $mode == full ]]; then
         if [[ $ENABLE_SELFSTEAL == yes ]]; then
             ui_install_phase selfsteal_apply || return
@@ -159,13 +160,13 @@ apply_installation() {
 }
 
 apply_selected_installation() (
-    local scope=$1 mode=$2 traffic_stage=''
+    local scope=$1 mode=$2 image=$3 traffic_stage=''
     if [[ $mode == full && $ENABLE_TRAFFIC_GUARD == yes ]]; then
         traffic_stage=$(mktemp -d "$STATE_DIR/.traffic-guard.XXXXXX") || return
         trap 'rm -rf -- "$traffic_stage"' EXIT
         ui_install_phase traffic_guard_prepare "$traffic_stage" || return
     fi
-    run_change "$scope" apply_installation "$mode" "$traffic_stage"
+    run_change "$scope" apply_installation "$mode" "$image" "$traffic_stage"
 )
 
 wizard_selfsteal_preflight() {
@@ -202,7 +203,7 @@ wizard_selfsteal_preflight() {
 install_wizard() {
     local mode=${1:-full} scope='config node' consent detected_port result=0
     local steps=3 components='Docker, Remnawave Node'
-    local old_address='' old_port='' had_selfsteal=no has_node=no
+    local old_address='' old_port='' had_selfsteal=no has_node=no image
     # shellcheck disable=SC2034 # The progress renderer reads the current wizard title.
     local UI_INSTALL_TITLE='Установка ноды'
     local UI_PROGRESS_DONE=0
@@ -227,14 +228,14 @@ install_wizard() {
     had_selfsteal=$ENABLE_SELFSTEAL
 
     ui_step 1 'Адрес и служебный порт' "$steps"
-    info '  Remnawave → Ноды → Управление → +'
-    info '  Укажите одинаковый домен или IP в панели и здесь.'
+    info '  В панели → Ноды → Управление → +'
+    info '  Введите тот же адрес, что и в панели.'
     NODE_DOMAIN=$(wizard_input 'Адрес ноды' "$old_address" check_node_address) || return
     if [[ $mode == node-only && $had_selfsteal == yes && $NODE_DOMAIN != "$old_address" ]]; then
         fail "Для HTTPS используется $old_address. Чтобы сменить адрес, откройте «Нода и компоненты»."
         return 1
     fi
-    info '  Node Port соединяет панель с нодой. Его можно скопировать из Compose.'
+    info '  Скопируйте Node Port из Compose.'
     NODE_PORT=$(wizard_input 'NODE_PORT из панели' "${old_port:-2222}" check_node_port) || return
     if [[ $mode == node-only && $ENABLE_SECURITY == yes && $has_node == yes && $NODE_PORT != "$old_port" ]]; then
         fail 'Чтобы сменить служебный порт в управляемом UFW, откройте «Нода и компоненты».'
@@ -242,14 +243,13 @@ install_wizard() {
     fi
 
     ui_step 2 'Ключ подключения' "$steps"
-    info '  Вставьте Secret Key из карточки ноды или строку SECRET_KEY из Compose.'
-    info '  Вместо ключа при вводе виден счётчик.'
+    info '  Вставьте Secret Key из карточки ноды.'
     ask_secret || return
 
     if [[ $mode == full ]]; then
         ui_step 3 'Дополнительные компоненты' "$steps"
         if [[ $ENABLE_SELFSTEAL == no ]]; then
-            ENABLE_SELFSTEAL=$(yes_no '  Self-steal · HTTPS-страница для REALITY?' y) || return
+            ENABLE_SELFSTEAL=$(yes_no '  Self-steal для REALITY?' y) || return
         fi
         if [[ $ENABLE_SELFSTEAL == yes ]]; then
             if ! valid_domain "$NODE_DOMAIN"; then
@@ -259,10 +259,10 @@ install_wizard() {
             SELFSTEAL_SERVER=$(select_selfsteal_server "$SELFSTEAL_SERVER") || return
         fi
         if [[ $ENABLE_BBR == no ]]; then
-            ENABLE_BBR=$(yes_no '  BBR + fq · оптимизация TCP?' y) || return
+            ENABLE_BBR=$(yes_no '  Включить BBR?' y) || return
         fi
         if [[ $ENABLE_TRAFFIC_GUARD == no ]]; then
-            ENABLE_TRAFFIC_GUARD=$(yes_no '  TrafficGuard · блокировка известных сканеров?' n) || return
+            ENABLE_TRAFFIC_GUARD=$(yes_no '  Включить TrafficGuard?' n) || return
         fi
 
         ui_step 4 'Порты и защита' "$steps"
@@ -281,7 +281,7 @@ install_wizard() {
             [[ -n $ADMIN_IPS ]] || { fail 'Для TrafficGuard нужен доверенный IP или подсеть.'; return 1; }
         fi
         PANEL_IPS=$(ask_panel_ips "$PANEL_IPS") || return
-        if [[ $ENABLE_SELFSTEAL == yes ]]; then info '  Укажите порт VLESS REALITY первым среди TCP-портов.'; fi
+        if [[ $ENABLE_SELFSTEAL == yes ]]; then info '  Первый TCP-порт — для REALITY.'; fi
         VPN_PORTS=$(security_prompt_vpn_ports "$VPN_PORTS") || return
         security_preflight || return
         components+=', UFW, Fail2Ban'
@@ -327,10 +327,11 @@ install_wizard() {
     printf '\n'
     consent=$(yes_no '  Начать установку?' n) || return
     [[ $consent == yes ]] || { info 'Установка отменена.'; return 0; }
-    if [[ $UI_CLEAR != yes ]]; then ui_screen "$UI_INSTALL_TITLE"; fi
-    ui_install_phase node_prepare_image || return
+    if [[ $UI_CLEAR == yes ]]; then ui_install_progress "$UI_PROGRESS_DONE"; else ui_screen "$UI_INSTALL_TITLE"; fi
+    image=$(node_release_image) || return
+    ui_install_phase node_prepare_image "$image" || return
     if [[ $mode == full ]]; then ui_install_phase prepare_security || return; fi
-    apply_selected_installation "$scope" "$mode" || return
+    apply_selected_installation "$scope" "$mode" "$image" || return
     printf '\n'
     ui_section 'Установка завершена'
     if [[ $mode == full && $ENABLE_TRAFFIC_GUARD == yes ]]; then traffic_guard_status; fi
@@ -378,7 +379,7 @@ configure_security() {
     fi
     _standalone_access || return
     if [[ ${UI_INTERACTIVE:-no} == yes ]]; then
-        if [[ $ENABLE_SELFSTEAL == yes ]]; then info '  Укажите порт VLESS REALITY первым среди TCP-портов.'; fi
+        if [[ $ENABLE_SELFSTEAL == yes ]]; then info '  Первый TCP-порт — для REALITY.'; fi
         VPN_PORTS=$(security_prompt_vpn_ports "$VPN_PORTS") || return
     fi
     ENABLE_SECURITY=yes
@@ -503,19 +504,22 @@ update_system_packages() {
 }
 
 update_node() {
+    local image
     require_config || return
     if [[ $ENABLE_SECURITY == yes ]] && ! security_ufw_active; then
         fail 'Включите управляемый UFW через пункт «Порты и защита».'
         return 1
     fi
-    node_preflight && node_prepare_image || return
-    run_change node node_apply
+    node_preflight || return
+    image=$(node_release_image) || return
+    node_prepare_image "$image" || return
+    run_change node node_apply "$image"
 }
 
 backup_scope() {
     local scope='config'
     if [[ -n $NODE_PORT ]]; then scope+=' node'; fi
-    if command -v ufw >/dev/null; then scope+=' network'; fi
+    if [[ $ENABLE_SECURITY == yes || $ENABLE_TRAFFIC_GUARD == yes ]]; then scope+=' network'; fi
     if [[ $ENABLE_SELFSTEAL == yes ]]; then scope+=' selfsteal'; fi
     if [[ $ENABLE_BBR == yes ]]; then scope+=' bbr'; fi
     printf '%s\n' "$scope"
@@ -565,8 +569,11 @@ doctor() {
         fail 'Сначала настройте ноду или один из компонентов.'
         return 1
     fi
-    node_status || result=1
-    if [[ $ENABLE_SELFSTEAL == yes ]]; then selfsteal_status || result=1; fi
+    if [[ -n $NODE_PORT ]]; then node_status required || result=1; fi
+    if [[ $ENABLE_SELFSTEAL == yes ]]; then
+        selfsteal_status || result=1
+        _selfsteal_validate_domain report || result=1
+    fi
     if [[ -n $NODE_PORT || -n $VPN_PORTS ]]; then
         if [[ $ENABLE_SECURITY == yes ]]; then
             security_vpn_status || result=1
@@ -580,10 +587,10 @@ doctor() {
         if ! security_ufw_active; then warn 'UFW неактивен.'; result=1; fi
         if ! fail2ban-client status sshd >/dev/null 2>&1; then warn 'Fail2Ban для SSH недоступен.'; result=1; fi
     fi
-    if [[ $ENABLE_TRAFFIC_GUARD == yes ]]; then traffic_guard_status || result=1; fi
+    if [[ $ENABLE_TRAFFIC_GUARD == yes ]]; then traffic_guard_status required || result=1; fi
     security_os_updates_status
     bbr_status
-    df -h -- "$STATE_DIR" "$BACKUP_DIR"
+    df -h -- "$STATE_DIR" "$BACKUP_DIR" || result=1
     return "$result"
 }
 
