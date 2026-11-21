@@ -366,6 +366,16 @@ with Terminal(pending=True, no_color=True) as terminal:
     terminal.enter("0")
     assert terminal.process.wait(timeout=5) == 0
 
+with Terminal(rows=18, columns=32) as terminal:
+    screen = without_ansi(terminal.expect("Номер пункта →"))
+    assert "REMNA NODE SETUP" in screen and "[7] Где взять данные" in screen
+    assert all(len(line) < 32 for line in screen.splitlines())
+    terminal.enter("4")
+    screen = without_ansi(terminal.expect("Номер пункта →").split(CLEAR)[-1])
+    assert "[5] Проверить связь" in screen and all(len(line) < 32 for line in screen.splitlines())
+    terminal.enter("q")
+    assert terminal.process.wait(timeout=5) == 0
+
 with Terminal() as terminal:
     terminal.expect("Номер пункта →")
     terminal.enter("4")

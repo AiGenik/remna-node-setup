@@ -118,7 +118,7 @@ node_apply ""
 [[ $(jq -er '.services.remnanode.image' "$NODE_DIR/compose.yaml") == "$selected" ]]
 
 _node_render_compose "$previous"
-node_restore_runtime
+node_restore_runtime running
 [[ $(tail -n 1 "$fixture/pulls") == "$previous" && ! -s $fixture/requests ]]
 
 printf '%s\n' 'node-image-updates OK'

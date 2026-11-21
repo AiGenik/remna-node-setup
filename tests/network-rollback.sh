@@ -65,8 +65,45 @@ ssh_transport_start() { printf '%s\n' "$expected_transport"; }
 if confirm_network; then exit 1; fi
 [[ -s $PENDING_FILE ]]
 expected_transport=1001
+ticket=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+other_ticket=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+if confirm_network "$ticket"; then exit 1; fi
+printf '%s\n' "$ticket" > "$BACKUP_DIR/$id/ssh-ticket"
+if confirm_network "$other_ticket"; then exit 1; fi
+expected_transport=999
+if confirm_network "$ticket"; then exit 1; fi
+expected_transport=
+if confirm_network "$ticket"; then exit 1; fi
+[[ -s $PENDING_FILE ]]
+expected_transport=1001
+confirm_network "$ticket"
+[[ ! -e $PENDING_FILE ]]
+
+printf '%s\n' "$id" > "$PENDING_FILE"
+printf '\n' > "$BACKUP_DIR/$id/initiator-ssh"
+ssh_context() { :; }
+expected_transport=
+if confirm_network; then exit 1; fi
+[[ -s $PENDING_FILE ]]
+expected_transport=1001
 confirm_network
 [[ ! -e $PENDING_FILE ]]
+
+# Old firewall must wait for the new node listener to stop.
+restore_trace=$fixture/restore-trace
+(
+    mkdir -p "$NODE_DIR"
+    touch "$NODE_DIR/compose.yaml"
+    printf 'stopped\n' > "$BACKUP_DIR/$id/node-runtime"
+    # shellcheck disable=SC2317 # Called by restore_snapshot through restore_step.
+    node_stop_for_network_restore() { printf 'stop %s\n' "$2" >> "$restore_trace"; }
+    path_restore() { printf 'files\n' >> "$restore_trace"; }
+    # shellcheck disable=SC2317 # Called by restore_snapshot through restore_step.
+    restore_network() { printf 'firewall\n' >> "$restore_trace"; }
+    node_restore_runtime() { printf 'container %s\n' "$1" >> "$restore_trace"; }
+    restore_snapshot "$id" 'node network'
+)
+diff -u <(printf '%s\n' 'stop stopped' files firewall 'container stopped') "$restore_trace"
 
 arm_rollback() { printf '%s\n' "$1" > "$PENDING_FILE"; }
 restore_snapshot() {

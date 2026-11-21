@@ -1,0 +1,21 @@
+name: Сообщить об ошибке
+description: Ошибка установки, подключения или обновления
+body:
+  - type: markdown
+    attributes:
+      value: Удалите из вывода команды пароли, ключи, токены и закрытые адреса.
+  - type: input
+    id: versions
+    attributes:
+      label: Версия Remna Node Setup и Ubuntu
+      description: Версию скрипта покажет remna-node-setup --version.
+      placeholder: 1.0.0, Ubuntu 24.04, amd64
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Как повторить и что произошло
+      description: Укажите пункт меню или команду, ожидаемое поведение и точный текст ошибки.
+    validations:
+      required: true

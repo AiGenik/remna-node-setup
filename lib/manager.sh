@@ -672,6 +672,7 @@ dispatch() (
     release_acquire_lock || return
     case "$action" in
         confirm) [[ $# == 1 ]] || return 2; confirm_network; return ;;
+        __ssh-confirm) [[ $# == 2 ]] && valid_ssh_ticket "$target" || return 2; confirm_network "$target"; return ;;
         rollback)
             if [[ $# == 1 ]]; then rollback_pending; return; fi
             if [[ $# != 2 || $target != tool ]]; then usage >&2; return 2; fi

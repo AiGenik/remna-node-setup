@@ -77,7 +77,10 @@ capture_snapshot() {
     dir=$(mktemp -d "$BACKUP_DIR/$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX") || return
     mkdir -- "$dir/files" || return
     if has_scope "$scope" config; then path_snapshot "$dir" "${SNAPSHOT_CONFIG[@]}" || return; fi
-    if has_scope "$scope" node; then path_snapshot "$dir" "${SNAPSHOT_NODE[@]}" || return; fi
+    if has_scope "$scope" node; then
+        path_snapshot "$dir" "${SNAPSHOT_NODE[@]}" || return
+        node_runtime_state > "$dir/node-runtime" || return
+    fi
     if has_scope "$scope" selfsteal; then
         path_snapshot "$dir" "${SNAPSHOT_CADDY[@]}" "${SNAPSHOT_NGINX[@]}" || return
         for unit in "${SELFSTEAL_UNITS[@]}"; do
@@ -212,16 +215,25 @@ restore_network() {
 }
 
 restore_snapshot() {
-    local id=$1 scope=$2 dir=$BACKUP_DIR/$1 errors=0
+    local id=$1 scope=$2 dir=$BACKUP_DIR/$1 errors=0 node_state=running
     if ! valid_snapshot_id "$id" || [[ ! -r $dir/scopes ]]; then
         fail 'Снимок не найден или неполон.'
         return 1
     fi
+    if has_scope "$scope" node; then
+        if [[ -r $dir/node-runtime ]]; then
+            node_state=$(< "$dir/node-runtime")
+            [[ $node_state =~ ^(running|stopped|missing)$ ]] || return 1
+        fi
+        if has_scope "$scope" network; then
+            restore_step 'безопасную остановку нового порта ноды' \
+                node_stop_for_network_restore "$dir/files$NODE_DIR/compose.yaml" "$node_state" || return 1
+        fi
+    fi
     if has_scope "$scope" config; then path_restore "$dir" "${SNAPSHOT_CONFIG[@]}" || errors=1; fi
-    # Close new listeners before restoring the older firewall if they did not exist in the snapshot.
     if has_scope "$scope" node; then
         path_restore "$dir" "${SNAPSHOT_NODE[@]}" || errors=1
-        if [[ ! -f $NODE_DIR/compose.yaml ]]; then node_restore_runtime || errors=1; fi
+        if [[ ! -f $NODE_DIR/compose.yaml ]]; then node_restore_runtime "$node_state" || errors=1; fi
     fi
     if has_scope "$scope" selfsteal; then
         restore_step 'конфигурацию self-steal' restore_selfsteal_files "$dir" || errors=1
@@ -231,7 +243,7 @@ restore_snapshot() {
         restore_step 'сервисы self-steal' restore_selfsteal_runtime "$dir" || errors=1
     fi
     if has_scope "$scope" node && [[ -f $NODE_DIR/compose.yaml ]]; then
-        restore_step 'контейнер ноды' node_restore_runtime || errors=1
+        restore_step 'контейнер ноды' node_restore_runtime "$node_state" || errors=1
     fi
     if has_scope "$scope" bbr; then
         path_restore "$dir" "${SNAPSHOT_BBR[@]}" || errors=1
@@ -292,7 +304,22 @@ network_mark_applied() {
     local id=$1 boot clock
     IFS= read -r boot < /proc/sys/kernel/random/boot_id || return
     clock=$(network_boot_clock) || return
+    if [[ -n ${SSH_MENU_TICKET:-} ]]; then
+        valid_ssh_ticket "$SSH_MENU_TICKET" || return 1
+        printf '%s\n' "$SSH_MENU_TICKET" > "$BACKUP_DIR/$id/ssh-ticket" || return
+    fi
     printf '%s %s\n' "$boot" "$clock" > "$BACKUP_DIR/$id/network-applied" || return
+}
+
+valid_ssh_ticket() {
+    [[ $1 =~ ^[a-f0-9]{32}$ ]]
+}
+
+network_ssh_ticket_matches() {
+    local id=$1 ticket=$2
+    valid_snapshot_id "$id" && valid_ssh_ticket "$ticket" &&
+        [[ -r $BACKUP_DIR/$id/network-applied && -r $BACKUP_DIR/$id/ssh-ticket ]] &&
+        [[ $(< "$BACKUP_DIR/$id/ssh-ticket") == "$ticket" ]]
 }
 
 network_group_running() {
@@ -444,9 +471,13 @@ rollback_pending() {
 }
 
 confirm_network() {
-    local id original current transport boot applied_boot applied_time
+    local ticket=${1-} id original current transport boot applied_boot applied_time
     id=$(pending_id) || return
     valid_snapshot_id "$id" || { fail 'Нет сетевых изменений для подтверждения.'; return 1; }
+    if [[ -n $ticket ]] && ! network_ssh_ticket_matches "$id" "$ticket"; then
+        fail 'Ожидающее изменение принадлежит другой операции. Проверьте меню снимков.'
+        return 1
+    fi
     if ! read -r applied_boot applied_time < "$BACKUP_DIR/$id/network-applied" ||
        ! [[ $applied_boot =~ ^[a-f0-9-]{36}$ && $applied_time =~ ^(0|[1-9][0-9]{0,17})$ ]] ||
        ! IFS= read -r boot < /proc/sys/kernel/random/boot_id; then
@@ -456,15 +487,13 @@ confirm_network() {
     original=$(< "$BACKUP_DIR/$id/initiator-ssh") || return
     current=$(ssh_context) || return
     transport=$(ssh_transport_start) || transport=
-    if [[ -n $original || -n $current || -n $transport ]]; then
-        if [[ ! $transport =~ ^[0-9]{1,18}$ || ( -n $current && $current == "$original" ) ]]; then
-            fail 'Откройте новое подключение по SSH и повторите sudo remna-node-setup confirm.'
-            return 1
-        fi
-        if [[ $applied_boot == "$boot" ]] && (( transport <= applied_time )); then
-            fail 'Этот SSH-сеанс открыт до применения правил. Создайте новое соединение без ControlMaster.'
-            return 1
-        fi
+    if [[ ! $transport =~ ^(0|[1-9][0-9]{0,17})$ || ( -n $current && $current == "$original" ) ]]; then
+        fail 'Откройте новое подключение по SSH и повторите sudo remna-node-setup confirm.'
+        return 1
+    fi
+    if [[ $applied_boot == "$boot" ]] && (( transport <= applied_time )); then
+        fail 'Этот SSH-сеанс открыт до применения правил. Создайте новое соединение без ControlMaster.'
+        return 1
     fi
     disarm_rollback || return
     info 'Сетевые настройки подтверждены.'

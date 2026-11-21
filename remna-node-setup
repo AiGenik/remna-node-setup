@@ -42,6 +42,9 @@ source "$PROJECT_DIR/lib/updates.sh"
 # shellcheck source=lib/port-preflight.sh
 source "$PROJECT_DIR/lib/port-preflight.sh"
 
+# Only the SSH launcher and its controlled release handoff assign this ticket.
+SSH_MENU_TICKET=
+
 usage() {
     cat <<'HELP'
 Remna Node Setup
@@ -91,6 +94,7 @@ self_test() {
     [[ -r $PROJECT_DIR/lib/secret-input.py ]] || { fail 'Модуль ввода ключа отсутствует.'; return 1; }
     [[ -r $PROJECT_DIR/lib/selfsteal-dns.py ]] || { fail 'Модуль проверки DNS отсутствует.'; return 1; }
     [[ -r $PROJECT_DIR/lib/port-probe.py ]] || { fail 'Модуль сетевой проверки отсутствует.'; return 1; }
+    [[ -s $PROJECT_DIR/templates/index.html ]] || { fail 'Шаблон страницы self-steal отсутствует.'; return 1; }
     jq -e 'type == "object" and (.version | test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))' "$PROJECT_DIR/versions.json" >/dev/null
 }
 
@@ -98,6 +102,7 @@ case "${1-}" in
     --help|-h|help) usage; exit ;;
     --version) version_get version; exit ;;
     --self-test) self_test; exit ;;
+    --supports-ssh-menu) exit 0 ;;
 esac
 
 ensure_host
@@ -111,6 +116,18 @@ fi
 
 ui_init
 case "${1-}" in
+    __ssh-menu)
+        [[ ( $# == 2 || $# == 3 ) && $UI_INTERACTIVE == yes ]] && valid_ssh_ticket "$2" || exit 2
+        ssh_transport_start >/dev/null || { fail 'Откройте меню через remna-ssh с другого компьютера.'; exit 1; }
+        SSH_MENU_TICKET=$2
+        notice=
+        if [[ $# == 3 ]]; then
+            dispatch __ssh-confirm "$3"
+            notice='Сеть подтверждена по SSH.'
+        fi
+        show_menu "$notice"
+        exit
+        ;;
     __auto-update)
         [[ $# == 1 ]] || exit 2
         auto_update_enabled || exit 0
@@ -124,7 +141,11 @@ case "${1-}" in
         exit
         ;;
     __apply-updates)
-        [[ $# == 3 && $2 =~ ^(manual|auto)$ && $3 =~ ^[01]$ ]] || exit 2
+        [[ ( $# == 3 || $# == 4 ) && $2 =~ ^(manual|auto)$ && $3 =~ ^[01]$ ]] || exit 2
+        if [[ $# == 4 ]]; then
+            [[ $2 == manual ]] && valid_ssh_ticket "$4" || exit 2
+            SSH_MENU_TICKET=$4
+        fi
         if [[ ! $RELEASE_LOCK -ef /proc/self/fd/9 ]] || ! flock -xn 9; then
             fail 'Обновление потеряло блокировку. Запустите его ещё раз.'
             exit 1

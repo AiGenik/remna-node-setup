@@ -38,11 +38,19 @@ ui_layout() {
     fi
     UI_COMPACT=no
     if (( columns < 58 || rows < 24 )); then UI_COMPACT=yes; fi
+    UI_COLUMNS=$columns
     UI_RULE_WIDTH=$(( columns > 62 ? 58 : columns - 4 ))
 }
 
+ui_fit() {
+    local value=$1 width=$2
+    if (( width < 1 )); then return 0; fi
+    if (( ${#value} > width )); then value=${value:0:width-1}…; fi
+    printf '%s' "$value"
+}
+
 ui_screen() {
-    local title=$1 parent=${2-} line
+    local title=$1 parent=${2-} line brand
     ui_layout
     if [[ $UI_CLEAR == yes ]]; then
         # Redraw the viewport and leave the SSH terminal's scrollback intact.
@@ -50,8 +58,11 @@ ui_screen() {
     else
         printf '\n'
     fi
-    printf '  %s%s  REMNA NODE SETUP%s  %sv%s%s\n' \
-        "${UI_ACCENT:-$UI_BOLD}" "$UI_LOGO" "$UI_RESET" "$UI_MUTED" "$UI_VERSION" "$UI_RESET"
+    brand="$UI_LOGO  REMNA NODE SETUP"
+    if (( ${#brand} + ${#UI_VERSION} + 6 > UI_COLUMNS )); then brand='REMNA NODE SETUP'; fi
+    brand=$(ui_fit "$brand" "$((UI_COLUMNS - ${#UI_VERSION} - 6))")
+    printf '  %s%s%s  %sv%s%s\n' \
+        "${UI_ACCENT:-$UI_BOLD}" "$brand" "$UI_RESET" "$UI_MUTED" "$UI_VERSION" "$UI_RESET"
     if (( UI_RULE_WIDTH >= 10 )); then
         printf -v line '%*s' "$UI_RULE_WIDTH" ''
         printf '  %s%s%s\n' "$UI_MUTED" "${line// /─}" "$UI_RESET"
@@ -60,7 +71,7 @@ ui_screen() {
         if [[ -n $parent ]] && (( ${#parent} + ${#title} + 3 <= UI_RULE_WIDTH )); then
             printf '  %s%s / %s%s%s\n\n' "$UI_MUTED" "$parent" "$UI_RESET$UI_BOLD" "$title" "$UI_RESET"
         else
-            printf '  %s%s%s\n\n' "$UI_BOLD" "$title" "$UI_RESET"
+            printf '  %s%s%s\n\n' "$UI_BOLD" "$(ui_fit "$title" "$((UI_COLUMNS - 3))")" "$UI_RESET"
         fi
     fi
 }
@@ -77,9 +88,13 @@ ui_network_confirmation() {
     local remaining mode=${1-}
     remaining=$(network_rollback_remaining) || remaining=
     ui_attention '● Сеть ждёт подтверждения SSH'
-    if [[ $mode != menu ]]; then ui_attention 'Оставьте этот SSH-сеанс открытым.'; fi
-    ui_attention 'В новом SSH-сеансе [6] → [3] или'
-    ui_attention 'sudo remna-node-setup confirm'
+    if [[ -n ${SSH_MENU_TICKET:-} ]] && network_ssh_ticket_matches "$(pending_id)" "$SSH_MENU_TICKET"; then
+        ui_attention 'Enter · проверка новым SSH'
+    else
+        if [[ $mode != menu ]]; then ui_attention 'Оставьте этот SSH-сеанс открытым.'; fi
+        ui_attention 'В новом SSH-сеансе [6] → [3] или'
+        ui_attention 'sudo remna-node-setup confirm'
+    fi
     case "$remaining" in
         '') ui_attention 'Без подтверждения будет автооткат.' ;;
         0) ui_attention 'Срок истёк. Проверьте состояние сети.' ;;
@@ -197,7 +212,8 @@ ui_menu_status() (
 )
 
 ui_menu_key() {
-    printf '  %s[%s]%s %s%s%s\n' "${UI_ACCENT:-$UI_BOLD}" "$1" "$UI_RESET" "$UI_BOLD" "$2" "$UI_RESET"
+    printf '  %s[%s]%s %s%s%s\n' "${UI_ACCENT:-$UI_BOLD}" "$1" "$UI_RESET" "$UI_BOLD" \
+        "$(ui_fit "$2" "$((UI_COLUMNS - 7))")" "$UI_RESET"
 }
 
 ui_preparation() {
@@ -268,8 +284,20 @@ MENU_ACTIONS=(
     'updates|7|Автообновления|auto-updates'
 )
 
+ui_restart_menu() {
+    if [[ -n ${SSH_MENU_TICKET:-} ]]; then
+        if "$RELEASE_COMMAND" --supports-ssh-menu >/dev/null 2>&1; then
+            exec "$RELEASE_COMMAND" __ssh-menu "$SSH_MENU_TICKET"
+        fi
+        info 'Выбранный выпуск открывается обычной командой sudo remna-node-setup.'
+        return 0
+    fi
+    exec "$RELEASE_COMMAND"
+}
+
 show_menu() {
-    local page=main parent title heading choice row section index label action notice='' id snapshots installed_version
+    local page=main parent title heading choice row section index label action notice=${1-} id snapshots installed_version
+    local notice_color=${UI_OK:-$UI_BOLD}
     local -a command=()
     while true; do
         case "$page" in
@@ -310,7 +338,7 @@ show_menu() {
             printf '  %s[0] Назад   [q] Выйти%s\n' "$UI_MUTED" "$UI_RESET"
         fi
         if [[ -n $notice ]]; then
-            printf '\n  %s%s%s\n' "${UI_WARN:-$UI_BOLD}" "$notice" "$UI_RESET"
+            printf '\n  %s%s%s\n' "$notice_color" "$(ui_fit "$notice" "$((UI_COLUMNS - 3))")" "$UI_RESET"
             notice=
         fi
         choice=$(prompt '  Номер пункта →') || return 0
@@ -324,6 +352,7 @@ show_menu() {
         fi
         if [[ ! $choice =~ ^[1-9]$ ]] || [[ -z ${actions[$choice]+x} ]]; then
             notice='Выберите номер из списка.'
+            notice_color=${UI_WARN:-$UI_BOLD}
             continue
         fi
 
@@ -353,15 +382,20 @@ show_menu() {
         fi
         if dispatch "${command[@]}"; then
             if [[ $action == 'update tool' || $action == 'rollback tool' ]]; then
-                exec "$RELEASE_COMMAND"
+                ui_restart_menu
+                return
             fi
         else
             warn 'Команда завершилась с ошибкой.'
         fi
+        if [[ -n ${SSH_MENU_TICKET:-} ]] && network_ssh_ticket_matches "$(pending_id)" "$SSH_MENU_TICKET"; then
+            ui_pause 'проверить SSH' || return 0
+            return 42
+        fi
         ui_pause 'вернуться в меню' || return 0
         if [[ $action == 'update all' && -x ${RELEASE_COMMAND:-} ]]; then
             installed_version=$("$RELEASE_COMMAND" --version) || return
-            if [[ $installed_version != "$UI_VERSION" ]]; then exec "$RELEASE_COMMAND"; fi
+            if [[ $installed_version != "$UI_VERSION" ]]; then ui_restart_menu; return; fi
         fi
     done
 }

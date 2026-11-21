@@ -322,16 +322,50 @@ node_apply() {
     info "Служебный порт ноды $NODE_PORT слушает. Проверьте подключение в панели Remnawave."
 }
 
+node_runtime_state() {
+    local inspection
+    if ! command -v docker >/dev/null; then printf 'missing\n'; return 0; fi
+    if ! inspection=$(_node_docker container inspect --format \
+        '{{index .Config.Labels "com.docker.compose.project"}} {{.State.Running}}' remnanode 2>/dev/null); then
+        _node_docker info >/dev/null 2>&1 || return 1
+        printf 'missing\n'
+        return 0
+    fi
+    case "$inspection" in
+        "$_node_project true") printf 'running\n' ;;
+        "$_node_project false") printf 'stopped\n' ;;
+        *) printf 'missing\n' ;;
+    esac
+}
+
+node_stop_for_network_restore() {
+    local saved_compose=$1 saved_state=$2 state active_port saved_port=
+    state=$(node_runtime_state) || return
+    [[ $state == running ]] || return 0
+    if [[ -r $saved_compose ]]; then
+        saved_port=$(jq -er '.services.remnanode.environment.NODE_PORT | tostring' "$saved_compose") || saved_port=
+    fi
+    active_port=$(_node_docker container inspect --format '{{json .Config.Env}}' remnanode |
+        jq -er 'map(select(startswith("NODE_PORT="))) | first // empty | ltrimstr("NODE_PORT=")') || active_port=
+    if [[ $saved_state == running && -n $saved_port && $active_port == "$saved_port" ]]; then return 0; fi
+    _node_docker container stop remnanode >/dev/null
+}
+
 node_restore_runtime() {
-    local owner image
+    local state=${1:-running} owner image
     if ! command -v docker >/dev/null; then
         return 0
     fi
-    if _node_owned_config; then
+    if [[ $state != missing ]] && _node_owned_config; then
         image=$(jq -er '.services.remnanode.image' "$NODE_DIR/compose.yaml") || return 1
         _node_pinned_image_version "$image" >/dev/null ||
             { fail 'В снимке отсутствует закреплённый образ Remnawave Node.'; return 1; }
         _node_ensure_image_cached "$image" || return 1
+        if [[ $state == stopped ]]; then
+            _node_compose stop remnanode || return
+            _node_compose create --pull never --no-build remnanode
+            return
+        fi
         _node_compose up --detach --pull never --no-build remnanode || return 1
         _node_wait_ready || return 1
         return 0

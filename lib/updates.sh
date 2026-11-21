@@ -153,7 +153,9 @@ update_all() {
         release_update || result=1
         current=$(release_get_optional_link "$RELEASE_ROOT/current") || return
         if [[ $current != "$previous" ]]; then
-            exec "$RELEASE_COMMAND" __apply-updates "$mode" "$result"
+            local -a handoff=(__apply-updates "$mode" "$result")
+            if [[ -n ${SSH_MENU_TICKET:-} ]]; then handoff+=("$SSH_MENU_TICKET"); fi
+            exec "$RELEASE_COMMAND" "${handoff[@]}"
         fi
     else
         info 'Репозиторий скрипта не задан. Обновляю установленные компоненты.'

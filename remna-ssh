@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    printf '%s\n' 'Использование: remna-ssh [--port PORT] [user@]host' \
+        'Можно указать имя из ~/.ssh/config. На VPS нужна версия Remna Node Setup 1.0 или новее.'
+}
+
+ssh_options=(-tt -o ControlMaster=no -o ControlPath=none -o ControlPersist=no
+    -o ClearAllForwardings=yes -o RemoteCommand=none -o ConnectTimeout=10)
+case ${1-} in
+    -h|--help) usage; exit ;;
+    -p|--port)
+        port=${2-}
+        if [[ ! $port =~ ^[1-9][0-9]{0,4}$ ]] || (( port > 65535 )); then usage >&2; exit 2; fi
+        ssh_options+=(-p "$port")
+        shift 2
+        ;;
+esac
+if [[ $# != 1 || -z $1 || $1 == -* || $1 == *[[:space:][:cntrl:]]* ]]; then usage >&2; exit 2; fi
+
+destination=$1
+previous=
+while :; do
+    ticket=$(LC_ALL=C od -An -N16 -tx1 /dev/urandom | tr -d '[:space:]')
+    [[ $ticket =~ ^[a-f0-9]{32}$ ]] || exit 1
+    args="__ssh-menu $ticket${previous:+ $previous}"
+    tool=/usr/local/bin/remna-node-setup
+    command="if [ \"\$(id -u)\" -eq 0 ]; then exec $tool $args; else exec sudo $tool $args; fi"
+    result=0
+    # The launcher inserts only the fixed path and validated hexadecimal tickets.
+    # shellcheck disable=SC2029
+    ssh "${ssh_options[@]}" "$destination" "$command" || result=$?
+    case $result in
+        0) exit 0 ;;
+        42)
+            previous=$ticket
+            printf '\n%s\n' 'Проверяю новое SSH-подключение…'
+            sleep 0.2
+            ;;
+        *)
+            if [[ -n $previous ]]; then
+                printf '%s\n' 'SSH завершился с ошибкой. Для неподтверждённых изменений действует автооткат.' >&2
+            fi
+            exit "$result"
+            ;;
+    esac
+done
