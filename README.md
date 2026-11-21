@@ -8,69 +8,52 @@
 
 ## Быстрый старт
 
-Для новой ноды откройте в Remnawave **Ноды → Управление → +**. Укажите адрес VPS и скопируйте `Node Port` и `Secret Key`.
+### 1. На VPS — установить мастер
 
-### 1. Установка мастера на VPS
-
-В Терминале на компьютере подключитесь к VPS. Подставьте свой IP.
+Откройте Терминал на Mac или Linux. Замените `203.0.113.10` на IP ноды из кабинета хостинга и подключитесь к VPS.
 
 ```bash
 ssh root@203.0.113.10
 ```
 
-В сеансе VPS установите мастер. Установщик скачает стабильный выпуск и сверит SHA-256.
+Введите пароль VPS, если SSH его запросит. Когда появится приглашение VPS вида `root@vps:~#`, вставьте следующую строку. Она установит мастер и откроет меню.
 
 ```bash
-(
-  set -e
-  remna_installer=$(mktemp)
-  trap 'unlink "$remna_installer"' EXIT
-  curl -q -fsSLo "$remna_installer" --proto '=https' \
-    https://raw.githubusercontent.com/AiGenik/remna-node-setup/HEAD/install.sh
-  sudo bash "$remna_installer" AiGenik/remna-node-setup
-)
+remna=$(curl -qfsSL --proto '=https' https://github.com/AiGenik/remna-node-setup/raw/HEAD/install.sh) && sudo bash -c "$remna"
 ```
 
-Если мастер уже установлен, вместо блока установки выполните `sudo remna-node-setup update tool`. После успешного завершения введите `exit`, чтобы вернуться в Терминал своего компьютера.
+Повторно меню на VPS открывается командой `sudo remna-node-setup`.
 
-### 2. Установка remna-ssh на компьютере
+### 2. В меню — настроить ноду
 
-Откройте локальный Терминал на Mac или Linux. Этот блок скачает помощник, сверит контрольную сумму и установит его в `~/.local/bin`.
-
-```bash
-(
-  set -e
-  remna_stage=$(mktemp -d)
-  trap 'cd /; rm -f -- "$remna_stage/remna-ssh" "$remna_stage/remna-ssh.sha256"; rmdir "$remna_stage"' EXIT
-  cd "$remna_stage"
-  remna_release=https://github.com/AiGenik/remna-node-setup/releases/latest/download
-  curl -q -fsSLO --proto '=https' "$remna_release/remna-ssh"
-  curl -q -fsSLO --proto '=https' "$remna_release/remna-ssh.sha256"
-  if command -v sha256sum >/dev/null; then
-    sha256sum -c remna-ssh.sha256
-  else
-    shasum -a 256 -c remna-ssh.sha256
-  fi
-  mkdir -p "$HOME/.local/bin"
-  install -m 0755 remna-ssh "$HOME/.local/bin/remna-ssh"
-)
-```
-
-### 3. Запуск меню с компьютера
-
-Для автоматической проверки укажите SSH-алиас панели и адрес ноды. `Panel-TW` здесь — пример алиаса из `~/.ssh/config`. Панель должна открываться по SSH-ключу. Также нужны Python 3.8+ на компьютере и Python 3 на панели.
-
-```bash
-"$HOME/.local/bin/remna-ssh" --panel Panel-TW root@203.0.113.10
-```
-
-Этот путь работает из любой папки. Команда `./remna-ssh` ищет файл в текущей папке.
-
-Для новой ноды выберите **[1] Только нода** или **[2] Нода и компоненты**. Для проверки готовой ноды выберите **[4] Диагностика → [5] Проверить связь до установки**. На вопросе о проверке с панели нажмите Enter. [Пошаговая установка](docs/Установка.md)
-
-Чтобы открыть обычное меню через помощник, запустите `"$HOME/.local/bin/remna-ssh" root@203.0.113.10`. Для прямого SSH-сеанса меню открывается на VPS командой `sudo remna-node-setup`.
+1. В панели Remnawave откройте **Ноды → Управление → +** и укажите IP или домен VPS. В карточке ноды возьмите `Node Port` и `Secret Key`. [Где найти поля](docs/Установка.md#что-вводить)
+2. В меню выберите **[1] Только нода** для подключения к панели или **[2] Нода и компоненты** для настройки self-steal, BBR и защиты за один проход.
+3. Для уже установленной ноды связь с панелью проверяется в **[4] Диагностика → [5] Проверить связь до установки**. Для запуска теста из одного терминала используйте помощник ниже.
 
 ![Главное меню Remna Node Setup](docs/media/menu.png)
+
+## Помощник remna-ssh
+
+Помощник нужен, если вы хотите проверять связь **с сервера панели** и подтверждать изменения firewall из одного терминала. На VPS уже должен быть установлен мастер из шага 1.
+
+1. Закройте меню кнопкой `0`, если оно открыто. В SSH-сеансе введите `exit`, чтобы вернуться в Терминал Mac или Linux.
+2. На своём компьютере выполните одну строку. Она проверит SHA-256 и установит помощник без sudo.
+
+```bash
+remna=$(curl -qfsSL --proto '=https' https://github.com/AiGenik/remna-node-setup/raw/HEAD/install.sh) && bash -c "$remna" -- --client
+```
+
+Затем на компьютере откройте меню ноды через помощник.
+
+```bash
+~/.local/bin/remna-ssh --panel root@198.51.100.20 root@203.0.113.10
+```
+
+- После `--panel` укажите **SSH-адрес панели** или её имя из `~/.ssh/config`. Подключение к панели должно работать по ключу.
+- Последним укажите **SSH-адрес ноды**. К ноде можно подключаться по паролю. Команда с `~/` работает из любой папки.
+- Для проверки портов в меню нажмите Enter на вопросе о проверке с панели. Нужны Python 3.8+ на компьютере и Python 3 на панели. [Что показывает проверка](docs/Эксплуатация.md#проверка-связи-до-установки)
+
+Для подтверждения SSH без проверки с панели достаточно `~/.local/bin/remna-ssh root@203.0.113.10`.
 
 ## Подтверждение SSH
 

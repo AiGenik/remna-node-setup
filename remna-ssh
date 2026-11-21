@@ -218,7 +218,11 @@ while :; do
     args="__ssh-menu $ticket${previous:+ $previous}"
     if [[ -n $panel ]]; then args="__ssh-menu $ticket ${previous:--} $probe_host"; fi
     tool=/usr/local/bin/remna-node-setup
-    command="if [ \"\$(id -u)\" -eq 0 ]; then exec $tool $args; else exec sudo $tool $args; fi"
+    command="if [ ! -x $tool ]; then
+        printf '%s\n' 'На VPS не найден Remna Node Setup. Сначала установите мастер по шагу 1 в README.' >&2
+        exit 127
+    fi
+    if [ \"\$(id -u)\" -eq 0 ]; then exec $tool $args; else exec sudo $tool $args; fi"
     result=0
     if [[ -n $panel ]]; then
         run_panel_menu "$panel" "$probe_host" "$ticket" ssh "${ssh_options[@]}" "$destination" "$command" || result=$?

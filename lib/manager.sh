@@ -154,6 +154,9 @@ apply_selected_installation() (
         trap 'rm -rf -- "$traffic_stage"' EXIT
         ui_install_phase traffic_guard_prepare "$traffic_stage" || return
     fi
+    if [[ $mode == full && $ENABLE_SELFSTEAL == yes ]]; then
+        release_wait_for_apt || return
+    fi
     run_change "$scope" apply_installation "$mode" "$image" "$traffic_stage"
 )
 
@@ -202,6 +205,7 @@ install_wizard() {
         scope+=' network'
         UI_INSTALL_TITLE='Установка ноды и компонентов'
     fi
+    release_wait_for_apt || return
     ui_run 'Подготовка VPS' apt_install_missing ca-certificates curl python3 iproute2 || return
 
     if load_config; then
@@ -379,6 +383,7 @@ add_selfsteal() {
     else
         info '  Для сертификата пропустите TCP 80 в действующем firewall и у провайдера.'
     fi
+    release_wait_for_apt || return
     run_change "$scope" apply_selfsteal "$open_acme"
 }
 

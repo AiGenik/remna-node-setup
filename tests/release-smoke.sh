@@ -48,9 +48,21 @@ release_curl() {
     if [[ "$1" == -H ]]; then
         cp -- "$fixture/release.json" "$4"
     else
-        cp -- "$fixture/$RELEASE_ARCHIVE" "$2"
+        cp -- "$fixture/${3##*/}" "$2"
     fi
 }
+
+cp -- "$PROJECT_DIR/remna-ssh" "$fixture/remna-ssh"
+(cd "$fixture" && sha256sum remna-ssh > remna-ssh.sha256)
+release_install_client "$fixture/client/bin"
+cmp -s "$PROJECT_DIR/remna-ssh" "$fixture/client/bin/remna-ssh"
+[[ -x "$fixture/client/bin/remna-ssh" ]]
+printf 'повреждение\n' >> "$fixture/remna-ssh"
+if release_install_client "$fixture/client/bin" >/dev/null 2>&1; then
+    printf 'Повреждённый помощник принят.\n' >&2
+    exit 1
+fi
+cmp -s "$PROJECT_DIR/remna-ssh" "$fixture/client/bin/remna-ssh"
 
 release_acquire_lock nowait
 if (exec 9<&-; release_acquire_lock nowait) 2>/dev/null; then

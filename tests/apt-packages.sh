@@ -4,6 +4,8 @@ set -euo pipefail
 PROJECT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 # shellcheck source=lib/common.sh
 source "$PROJECT_DIR/lib/common.sh"
+# shellcheck source=install.sh
+source "$PROJECT_DIR/install.sh"
 
 test_dir=$(mktemp -d)
 trap 'rm -rf -- "$test_dir"' EXIT
@@ -14,6 +16,36 @@ versions_db=$test_dir/candidates
 holds_db=$test_dir/holds
 UPDATE_FAILURE=no
 SIMULATION=ok
+
+(
+    service_state=$test_dir/apt-service
+    printf 'activating\n' > "$service_state"
+    systemctl() {
+        [[ $* == 'show -p ActiveState --value apt-daily.service apt-daily-upgrade.service' ]] || return 1
+        printf 'inactive\n'
+        cat -- "$service_state"
+    }
+    held_lock=
+    lslocks() { printf '%s\n' "$held_lock"; }
+    sleep() {
+        [[ $1 == 5 ]] || return 1
+        printf 'inactive\n' > "$service_state"
+        held_lock=
+    }
+    release_wait_for_apt 2>"$errors"
+    grep -Fq 'Проверяю каждые 5 секунд' "$errors"
+    grep -Fq 'APT свободен' "$errors"
+    [[ $(< "$service_state") == inactive ]]
+
+    held_lock=/var/lib/dpkg/lock-frontend
+    release_wait_for_apt 2>"$errors"
+    [[ -z $held_lock ]]
+
+    held_lock=/var/lib/apt/lists/lock
+    sleep() { SECONDS=$((SECONDS + 600)); }
+    if release_wait_for_apt 2>"$errors"; then exit 1; fi
+    grep -Fq 'APT всё ещё занят' "$errors"
+)
 
 dpkg-query() {
     local package=${*: -1}

@@ -170,7 +170,8 @@ _standalone_apply_selfsteal() {
 
 standalone_selfsteal() {
     local scope='config selfsteal' acme_rule=no
-    _standalone_load && apt_install_missing ca-certificates curl python3 iproute2 || return
+    _standalone_load && release_wait_for_apt &&
+        apt_install_missing ca-certificates curl python3 iproute2 || return
     if [[ -z $NODE_DOMAIN || ${UI_INTERACTIVE:-no} == yes ]]; then
         info '  Домен должен указывать на публичный IP этого VPS. Для Cloudflare используйте DNS only.'
         NODE_DOMAIN=$(wizard_input 'Домен self-steal' "$NODE_DOMAIN" check_node_domain) || return
@@ -184,5 +185,6 @@ standalone_selfsteal() {
     elif security_ufw_active; then
         info 'Проверьте, что действующие правила UFW пропускают TCP 80 для выпуска сертификата.'
     fi
+    release_wait_for_apt || return
     run_change "$scope" _standalone_apply_selfsteal "$acme_rule"
 }

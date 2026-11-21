@@ -31,6 +31,7 @@ CONFIG_DIR=$(mktemp -d)
 STATE_DIR=$CONFIG_DIR
 trap 'rm -rf -- "$CONFIG_DIR"' EXIT
 apt_install_missing() { :; }
+release_wait_for_apt() { :; }
 get_admin_ip() { ADMIN_IP=198.51.100.8; }
 detect_ssh_port() { printf '2202\n'; }
 security_detect_vpn_ports() { printf '9443/tcp\n'; }

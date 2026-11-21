@@ -22,6 +22,7 @@ SKIP_APPLY=no
 
 apt_install_missing() { :; }
 apt_install_current() { :; }
+release_wait_for_apt() { :; }
 prepare_security() { :; }
 get_admin_ip() { ADMIN_IP=192.0.2.7; }
 detect_ssh_port() { printf '2202\n'; }

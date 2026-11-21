@@ -12,6 +12,30 @@ release_error() {
     return 1
 }
 
+release_apt_is_busy() {
+    local states locks
+    if states=$(systemctl show -p ActiveState --value apt-daily.service apt-daily-upgrade.service 2>/dev/null) &&
+        grep -Eq '^(activating|active|deactivating|reloading)$' <<< "$states"; then
+        return 0
+    fi
+    locks=$(lslocks --noheadings --notruncate --output PATH 2>/dev/null) || return 1
+    grep -Eq '^[[:space:]]*/var/(lib/(dpkg/lock(-frontend)?|apt/lists/lock)|cache/apt/archives/lock)\*?[[:space:]]*$' <<< "$locks"
+}
+
+release_wait_for_apt() {
+    local deadline=$((SECONDS + 600))
+    if ! release_apt_is_busy; then return 0; fi
+    printf '%s\n' 'APT занят. Проверяю каждые 5 секунд, до 10 минут.' >&2
+    while release_apt_is_busy; do
+        if (( SECONDS >= deadline )); then
+            release_error 'APT всё ещё занят. Дождитесь завершения системных обновлений и повторите установку.'
+            return
+        fi
+        sleep 5 || return 1
+    done
+    printf '%s\n' 'APT свободен. Продолжаю установку.' >&2
+}
+
 release_acquire_lock() {
     if [[ ! -e "$RELEASE_LOCK" && ! -L "$RELEASE_LOCK" ]]; then
         (umask 077; set -o noclobber; : > "$RELEASE_LOCK") 2>/dev/null || :
@@ -80,6 +104,39 @@ release_curl() {
     curl --disable --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
         --connect-timeout 10 --max-time 120 "$@"
 }
+
+release_install_client() (
+    local directory=$1 stage checksum filename extra
+    local assets="https://github.com/$RELEASE_DEFAULT_REPOSITORY/releases/latest/download"
+    mkdir -p -- "$directory" || return 1
+    stage=$(mktemp -d "$directory/.remna-ssh.XXXXXXXX") || return 1
+    trap 'rm -rf -- "$stage"' EXIT
+
+    release_curl -o "$stage/remna-ssh" "$assets/remna-ssh" || return 1
+    release_curl -o "$stage/remna-ssh.sha256" "$assets/remna-ssh.sha256" || return 1
+    read -r checksum filename extra < "$stage/remna-ssh.sha256" || return 1
+    if ! [[ "$checksum" =~ ^[a-f0-9]{64}$ && "$filename" == remna-ssh && -z "$extra" ]]; then
+        release_error 'В релизе отсутствует корректная сумма SHA-256 для remna-ssh.'
+        return 1
+    fi
+    (
+        cd -- "$stage" || exit 1
+        printf '%s  remna-ssh\n' "$checksum" > checksum
+        if command -v sha256sum >/dev/null; then
+            sha256sum -c checksum
+        else
+            shasum -a 256 -c checksum
+        fi
+    ) || return 1
+
+    if [[ -d "$directory/remna-ssh" ]]; then
+        release_error "Каталог $directory/remna-ssh занимает место файла помощника."
+        return 1
+    fi
+    chmod 0755 -- "$stage/remna-ssh" || return 1
+    mv -f -- "$stage/remna-ssh" "$directory/remna-ssh" || return 1
+    printf 'Помощник установлен. Команда запуска: %s\n' "$directory/remna-ssh"
+)
 
 release_check_latest_version() {
     local candidate=$1 current version
@@ -252,6 +309,7 @@ release_usage() {
 sudo bash install.sh
 sudo bash install.sh OWNER/REPO [vX.Y.Z]
 sudo ./install.sh --local
+bash install.sh --client
 USAGE
 }
 
@@ -260,7 +318,12 @@ release_install_main() (
     local pending_repo=""
     case "${1:-}" in
         -h|--help) release_usage; return 0 ;;
-        --local) [[ $# -eq 1 ]] || { release_usage >&2; return 2; } ;;
+        --client)
+            [[ $# -eq 1 ]] || { release_usage >&2; return 2; }
+            release_install_client "$HOME/.local/bin"
+            return
+            ;;
+        --local) [[ $# -eq 1 && -f ${BASH_SOURCE[0]:-} ]] || { release_usage >&2; return 2; } ;;
         '') [[ $# -eq 0 ]] || { release_usage >&2; return 2; }; repository=$RELEASE_DEFAULT_REPOSITORY ;;
         *)
             if (( $# < 1 || $# > 2 )); then
@@ -291,6 +354,7 @@ release_install_main() (
         return 1
     fi
     if ! command -v jq >/dev/null || ! command -v curl >/dev/null; then
+        release_wait_for_apt || return 1
         apt-get -o APT::Update::Error-Mode=any \
             -o Acquire::AllowInsecureRepositories=false \
             -o Acquire::AllowDowngradeToInsecureRepositories=false \
@@ -320,7 +384,7 @@ release_install_main() (
     printf 'Меню открывается командой sudo remna-node-setup.\n'
 )
 
-if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+if [[ "${BASH_SOURCE[0]:-$0}" == "$0" ]]; then
     set -Eeuo pipefail
     umask 022
     release_install_main "$@"
