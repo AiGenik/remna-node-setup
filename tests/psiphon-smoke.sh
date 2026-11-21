@@ -75,5 +75,13 @@ jq -n --arg image "$PSIPHON_IMAGE" '{
 }' > "$fixture/psiphon.json"
 psiphon_update
 [[ $(< "$fixture/install") == 'DE 1081' ]]
+rm -f -- "$fixture/install"
+jq -n --arg image "$PSIPHON_IMAGE" --arg commit "$PSIPHON_UPSTREAM_COMMIT" '{
+    version:"1.3",commit:$commit,region:"DE",port:1081,image:$image
+}' > "$fixture/psiphon.json"
+psiphon_apply_settings DE 1081
+[[ ! -e $fixture/install ]]
+psiphon_apply_settings NL 1081
+[[ $(< "$fixture/install") == 'NL 1081' ]]
 
 printf '%s\n' 'psiphon-smoke OK'

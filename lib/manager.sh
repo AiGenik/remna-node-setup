@@ -204,6 +204,7 @@ install_wizard() {
     local mode=${1:-full} scope='config node' consent detected_port result=0
     local steps=3 components='Docker, Remnawave Node'
     local old_address='' old_port='' had_selfsteal=no has_node=no image
+    local gemini=no gemini_default=n PSIPHON_REGION PSIPHON_PORT
     # shellcheck disable=SC2034 # The progress renderer reads the current wizard title.
     local UI_INSTALL_TITLE='Установка ноды'
     local UI_PROGRESS_DONE=0
@@ -264,6 +265,9 @@ install_wizard() {
         if [[ $ENABLE_TRAFFIC_GUARD == no ]]; then
             ENABLE_TRAFFIC_GUARD=$(yes_no '  Включить TrafficGuard?' n) || return
         fi
+        if psiphon_is_managed; then gemini_default=y; fi
+        gemini=$(yes_no '  Настроить Gemini через Psiphon?' "$gemini_default") || return
+        if [[ $gemini == yes ]]; then psiphon_select_settings || return; fi
 
         ui_step 4 'Порты и защита' "$steps"
         if [[ $ENABLE_SECURITY == no && -z $VPN_PORTS ]]; then
@@ -307,6 +311,7 @@ install_wizard() {
             components+=', TrafficGuard'
             UI_INSTALL_PHASES+=('Применение базы TrafficGuard')
         fi
+        if [[ $gemini == yes ]]; then UI_INSTALL_PHASES+=('Gemini через Psiphon'); fi
     else
         UI_INSTALL_PHASES+=('Контейнер Remnawave')
     fi
@@ -320,6 +325,9 @@ install_wizard() {
         info "  SSH        $SSH_PORT/tcp"
         info "  VPN        ${VPN_PORTS:-будут настроены позже}"
         if [[ $ENABLE_SELFSTEAL == yes ]]; then info '  ACME       80/tcp'; fi
+        if [[ $gemini == yes ]]; then
+            info "  Gemini     Psiphon (${PSIPHON_REGION:-auto}) · 127.0.0.1:$PSIPHON_PORT"
+        fi
     elif [[ $ENABLE_SECURITY == no || -z $PANEL_IPS ]]; then
         info "  В firewall разрешите $NODE_PORT/tcp только с IP панели."
     fi
@@ -332,10 +340,29 @@ install_wizard() {
     ui_install_phase node_prepare_image "$image" || return
     if [[ $mode == full ]]; then ui_install_phase prepare_security || return; fi
     apply_selected_installation "$scope" "$mode" "$image" || return
+    if [[ $gemini == yes ]]; then
+        # The loopback service has its own rollback and runs after the network worker commits.
+        UI_PROGRESS_DONE=$((${#UI_INSTALL_PHASES[@]} - 1))
+        if ! ui_install_phase psiphon_apply_settings "$PSIPHON_REGION" "$PSIPHON_PORT"; then
+            warn 'Нода настроена. Повторите настройку Gemini в меню [3] → [5] после подтверждения SSH.'
+            if [[ $UI_CLEAR == yes ]]; then ui_network_confirmation; fi
+            return 1
+        fi
+        ui_install_progress "$UI_PROGRESS_DONE"
+    fi
     printf '\n'
     ui_section 'Установка завершена'
     if [[ $mode == full && $ENABLE_TRAFFIC_GUARD == yes ]]; then traffic_guard_status; fi
     show_panel_help
+    if [[ $gemini == yes ]]; then
+        printf '\n'
+        ui_section 'Gemini через Psiphon'
+        info '  Откройте [3] → [6] и добавьте шаблон в профиль ноды в Remnawave.'
+        if [[ $UI_CLEAR == yes ]]; then
+            printf '\n'
+            ui_network_confirmation
+        fi
+    fi
 }
 
 apply_selfsteal() {

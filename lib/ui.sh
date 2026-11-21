@@ -237,7 +237,7 @@ select_selfsteal_server() {
 
 MENU_ACTIONS=(
     'main|1|Только нода|install node-only'
-    'main|2|Нода и компоненты|install'
+    'main|2|Нода и компоненты · Gemini|install'
     'main|3|Порты и защита|@components'
     'main|4|Диагностика|@diagnostics'
     'main|5|Обновления|@updates'
@@ -247,8 +247,8 @@ MENU_ACTIONS=(
     'components|2|Входящие порты и защита SSH|security'
     'components|3|Настроить TCP (BBR и fq)|bbr'
     'components|4|TrafficGuard против сканеров|update traffic-guard'
-    'components|5|Настроить Psiphon|psiphon'
-    'components|6|Шаблон Gemini для Psiphon|psiphon profile'
+    'components|5|Gemini · Настроить Psiphon|psiphon'
+    'components|6|Gemini · Шаблон для Remnawave|psiphon profile'
     'diagnostics|1|Статус ноды и компонентов|status'
     'diagnostics|2|Проверка портов и сервисов|doctor'
     'diagnostics|3|Логи ноды|logs'
@@ -351,8 +351,7 @@ show_menu() {
         fi
         if dispatch "${command[@]}"; then
             if [[ $action == 'update tool' || $action == 'rollback tool' ]]; then
-                info 'Откройте меню снова, чтобы использовать выбранную версию.'
-                return 0
+                exec "$RELEASE_COMMAND"
             fi
         else
             warn 'Команда завершилась с ошибкой.'

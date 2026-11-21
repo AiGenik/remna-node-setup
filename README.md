@@ -13,7 +13,7 @@ f=$(mktemp) && curl -q -fsSLo "$f" --proto =https https://raw.githubusercontent.
 В панели откройте «Ноды → Управление → +». Приготовьте адрес VPS, Node Port и Secret Key.
 
 - **Только нода** — Docker и Remnawave Node.
-- **Нода и компоненты** — нода и защита, с выбором self-steal, BBR и TrafficGuard.
+- **Нода и компоненты** — нода и защита, с выбором self-steal, BBR, TrafficGuard и Gemini через Psiphon.
 
 После изменения firewall подтвердите доступ командой `sudo remna-node-setup confirm` из нового SSH-сеанса.
 
@@ -25,7 +25,7 @@ sudo remna-node-setup update tool && sudo remna-node-setup
 
 В меню «Обновления» выберите **Обновить всё** или включите **Автообновления**.
 
-Для локального выхода Psiphon откройте «Порты и защита → Настроить Psiphon».
+Для настройки Gemini на готовой ноде откройте «Порты и защита → Gemini · Настроить Psiphon».
 
 - [Установка и подключение к панели](docs/Установка.md)
 - [Обновление, резервные копии и восстановление](docs/Эксплуатация.md)

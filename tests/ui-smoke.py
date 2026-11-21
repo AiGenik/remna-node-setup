@@ -24,8 +24,10 @@ source lib/ui.sh
 source lib/manager.sh
 source lib/security.sh
 source lib/standalone.sh
+source lib/psiphon.sh
 PROJECT_DIR=$PWD
 CONFIG_DIR=$(mktemp -d)
+STATE_DIR=$CONFIG_DIR
 trap 'rm -rf -- "$CONFIG_DIR"' EXIT
 apt_install_missing() { :; }
 get_admin_ip() { ADMIN_IP=198.51.100.8; }
@@ -43,6 +45,14 @@ node_prepare_image() {
     fi
 }
 node_apply() { :; }
+psiphon_is_managed() { return 1; }
+_psiphon_existing_install() { return 1; }
+_psiphon_default_port() { printf '1080\n'; }
+_psiphon_install() {
+    [[ -f $STATE_DIR/node-applied && $1 == NL && $2 == 1081 ]] || return 1
+    printf 'TEST-PSIPHON\n'
+    [[ ${FAIL_PSIPHON:-no} != yes ]]
+}
 prepare_security() { [[ $EXPECTED_MODE == full ]]; }
 security_apply_current() { [[ $EXPECTED_MODE == full ]]; }
 selfsteal_apply() { [[ $EXPECTED_MODE == full ]]; }
@@ -61,18 +71,29 @@ run_change() {
     "$@" || return 1
     load_config || return 1
     [[ $ENABLE_SECURITY == "$([[ $EXPECTED_MODE == full ]] && printf yes || printf no)" ]] || return 1
+    touch "$STATE_DIR/node-applied" || return 1
     printf 'TEST-APPLIED\n'
+    if [[ $EXPECTED_MODE == full ]]; then ui_network_confirmation; fi
 }
 dispatch() {
     case "$1" in
         install) install_wizard "${2-}" ;;
         status) printf 'TEST-NODE-STATUS\n' ;;
+        update) [[ $2 == tool ]] ;;
     esac
 }
 PENDING_FILE=$CONFIG_DIR/pending
 if [[ ${TEST_PENDING:-no} == yes ]]; then printf 'test\n' > "$PENDING_FILE"; fi
 network_rollback_remaining() { printf '123\n'; }
 NODE_SECRET=$CONFIG_DIR/node.secret
+RELEASE_COMMAND=$CONFIG_DIR/active-menu
+cat > "$RELEASE_COMMAND" <<'MENU'
+#!/usr/bin/env bash
+printf 'TEST-REOPENED\n'
+rm -f -- "$0"
+rmdir -- "${0%/*}"
+MENU
+chmod +x "$RELEASE_COMMAND"
 ui_init
 "$1"
 '''
@@ -149,7 +170,7 @@ with Terminal() as terminal:
     screen = without_ansi(terminal.expect("Номер пункта →"))
     assert "●─[◆]─●  REMNA NODE SETUP" in screen
     assert "УСТАНОВКА" in screen and "УПРАВЛЕНИЕ" in screen
-    assert "[1] Только нода" in screen and "[2] Нода и компоненты" in screen
+    assert "[1] Только нода" in screen and "[2] Нода и компоненты · Gemini" in screen
     assert "Docker и подключение к панели" not in screen
     terminal.enter("4")
     screen = terminal.expect("Номер пункта →")
@@ -192,6 +213,12 @@ with Terminal() as terminal:
     terminal.enter("n")
     terminal.expect("Включить TrafficGuard? [y/N]")
     terminal.enter("n")
+    terminal.expect("Настроить Gemini через Psiphon? [y/N]")
+    terminal.enter("y")
+    terminal.expect("Регион Psiphon (auto, DE, NL, US) → [auto]")
+    terminal.enter("nl")
+    terminal.expect("Локальный порт SOCKS5 → [1080]")
+    terminal.enter("1081")
     terminal.expect("Порт SSH → [2202]")
     terminal.enter()
     assert "сервере панели".encode() in terminal.expect("IP панели →")
@@ -201,32 +228,44 @@ with Terminal() as terminal:
     screen = terminal.expect("Начать установку? [y/N]")
     assert KEY_MARKER.encode() not in screen
     assert b"3333" in screen and b"nginx" in screen and b"9443/tcp 2443/udp" in screen
+    assert b"Psiphon (NL)" in screen and b"127.0.0.1:1081" in screen
     assert termios.tcgetattr(terminal.fd)[3] & termios.ECHO
     terminal.enter("y")
     screen = terminal.expect("Enter — вернуться в меню")
     progress = without_ansi(screen)
-    assert "TEST-APPLIED" in progress and "1 / 5" in progress and "5 / 5" in progress
+    assert "TEST-APPLIED" in progress and "1 / 6" in progress and "6 / 6" in progress
     assert "›  Docker и образ ноды" in progress and "○  Контейнер Remnawave" in progress
     finished = without_ansi(screen.split(CLEAR)[-1])
-    assert finished.count("✓") == 5 and "Установка завершена" in finished
+    assert finished.count("✓") == 6 and "Установка завершена" in finished
+    assert "Откройте [3] → [6]" in finished and "Сеть ждёт подтверждения SSH" in finished
     terminal.enter()
     terminal.expect("Номер пункта →")
     terminal.enter("0")
     assert terminal.process.wait(timeout=5) == 0
 
-with_input = "\n".join(
-    ["node.example.com", "NODE_PORT=3333", TEST_KEY, "n", "n", "n", "", "192.0.2.25",
-     "9443/tcp 2443/udp", "y", ""]
-)
+base_inputs = ["node.example.com", "NODE_PORT=3333", TEST_KEY, "n", "n", "n"]
+network_inputs = ["", "192.0.2.25", "9443/tcp 2443/udp", "y", ""]
 plain = subprocess.run(
     ["bash", "-c", FIXTURE, "ui-test", "install_wizard"],
     cwd=ROOT, env={**ENV, "EXPECTED_WEBSERVER": "caddy", "EXPECTED_MODE": "full"},
-    input=with_input, capture_output=True, text=True, check=True,
+    input="\n".join([*base_inputs, "n", *network_inputs]), capture_output=True, text=True, check=True,
 )
 assert "TEST-APPLIED" in plain.stdout
 assert "[1/4] Docker и образ ноды" in plain.stdout and "[4/4] Контейнер Remnawave" in plain.stdout
+assert "TEST-PSIPHON" not in plain.stdout
 assert "\x1b" not in plain.stdout + plain.stderr
 assert TEST_KEY not in plain.stdout + plain.stderr
+
+psiphon_failed = subprocess.run(
+    ["bash", "-c", FIXTURE, "ui-test", "install_wizard"],
+    cwd=ROOT, env={**ENV, "EXPECTED_WEBSERVER": "caddy", "EXPECTED_MODE": "full", "FAIL_PSIPHON": "yes"},
+    input="\n".join([*base_inputs, "y", "NL", "1081", *network_inputs]),
+    capture_output=True, text=True,
+)
+assert psiphon_failed.returncode == 1
+assert "TEST-APPLIED" in psiphon_failed.stdout and "TEST-PSIPHON" in psiphon_failed.stdout
+assert "Повторите настройку Gemini" in psiphon_failed.stderr
+assert "Сеть ждёт подтверждения SSH" in psiphon_failed.stdout
 
 def accept_minimal_install(terminal):
     assert "Только нода".encode() in terminal.expect("Номер пункта →")
@@ -241,7 +280,7 @@ def accept_minimal_install(terminal):
     terminal.expect(f"Введено {len(TEST_KEY)} симв.")
     terminal.enter()
     screen = terminal.expect("Начать установку? [y/N]")
-    assert b"UFW" not in screen and b"Fail2Ban" not in screen
+    assert b"UFW" not in screen and b"Fail2Ban" not in screen and b"Gemini" not in screen
     terminal.enter("y")
 
 
@@ -307,4 +346,12 @@ with Terminal(pending=True, no_color=True) as terminal:
     terminal.enter("0")
     assert terminal.process.wait(timeout=5) == 0
 
-print("Проверены меню 80×24, меню 42×18, NO_COLOR, мастер, прогресс и скрытый ввод.")
+with Terminal() as terminal:
+    terminal.expect("Номер пункта →")
+    terminal.enter("5")
+    terminal.expect("Номер пункта →")
+    terminal.enter("1")
+    terminal.expect("TEST-REOPENED")
+    assert terminal.process.wait(timeout=5) == 0
+
+print("Проверены компактное меню, мастер Gemini, прогресс, скрытый ввод и перезапуск меню.")

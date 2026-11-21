@@ -81,7 +81,8 @@ self_test() {
         traffic_guard_capture_runtime traffic_guard_restore_before_ufw traffic_guard_restore_after_ufw \
         release_update release_rollback release_acquire_lock install_wizard restore_snapshot \
         load_host_settings standalone_selfsteal standalone_security standalone_bbr standalone_traffic_guard \
-        auto_update_enabled psiphon_configure psiphon_is_managed psiphon_outbound update_all; do
+        auto_update_enabled psiphon_configure psiphon_is_managed psiphon_select_settings \
+        psiphon_apply_settings psiphon_profile psiphon_outbound update_all; do
         declare -F "$name" >/dev/null || { fail "Не загружен модуль $name."; return 1; }
     done
     [[ -r $PROJECT_DIR/lib/secret-input.py ]] || { fail 'Модуль ввода ключа отсутствует.'; return 1; }

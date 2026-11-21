@@ -70,6 +70,11 @@ _psiphon_default_port() {
     done
 }
 
+_psiphon_input_port() {
+    valid_port "$1" || { fail 'Укажите корректный порт SOCKS5.'; return 1; }
+    printf '%s\n' "$1"
+}
+
 _psiphon_docker_ready() {
     local context version mode
     context=$(env -u DOCKER_CONTEXT -u DOCKER_HOST docker context show 2>/dev/null) ||
@@ -289,8 +294,8 @@ _psiphon_install() (
     chmod 0600 "$stage/marker.json" && mv -f -- "$stage/marker.json" "$(_psiphon_marker)"
 )
 
-psiphon_configure() {
-    local region='' port=1080 answer consent
+psiphon_select_settings() {
+    local region='' port=1080
     if psiphon_is_managed; then
         region=$(jq -r '.region' "$(_psiphon_marker)") || return 1
         port=$(jq -r '.port' "$(_psiphon_marker)") || return 1
@@ -300,19 +305,35 @@ psiphon_configure() {
     elif command -v ss >/dev/null; then
         port=$(_psiphon_default_port) || return 1
     fi
-    answer=$(prompt 'Страна выхода Psiphon (auto, DE, NL, US и другие)' "${region:-auto}") || return 1
-    region=$(_psiphon_region "$answer") || return 1
-    port=$(prompt 'Порт локального SOCKS5' "$port") || return 1
-    valid_port "$port" || { fail 'Укажите корректный порт SOCKS5.'; return 1; }
-    info "Psiphon будет доступен по TCP 127.0.0.1:$port. HTTP-прокси отключён."
+    PSIPHON_REGION=$(wizard_input 'Регион Psiphon (auto, DE, NL, US)' "${region:-auto}" _psiphon_region) || return
+    # shellcheck disable=SC2034 # Read by the calling installation wizard.
+    PSIPHON_PORT=$(wizard_input 'Локальный порт SOCKS5' "$port" _psiphon_input_port)
+}
+
+psiphon_apply_settings() {
+    local region=$1 port=$2
+    if psiphon_is_managed && jq -e --arg region "$region" --argjson port "$port" \
+        --arg commit "$PSIPHON_UPSTREAM_COMMIT" --arg image "$PSIPHON_IMAGE" \
+        '.region == $region and .port == $port and .commit == $commit and .image == $image' \
+        "$(_psiphon_marker)" >/dev/null && [[ $(enabled "$_psiphon_service") == yes ]] &&
+        _psiphon_verify "$region" "$port" "$PSIPHON_IMAGE"; then
+        return 0
+    fi
+    _psiphon_install "$region" "$port"
+}
+
+psiphon_configure() {
+    local PSIPHON_REGION PSIPHON_PORT consent
+    psiphon_select_settings || return
+    info "Psiphon будет доступен по TCP 127.0.0.1:$PSIPHON_PORT. HTTP-прокси отключён."
     consent=$(yes_no 'Установить или перенастроить Psiphon?' n) || return 1
     [[ $consent == yes ]] || return 0
     apt_install_missing curl python3 iproute2 || return 1
     if ! command -v docker >/dev/null; then ui_run 'Docker для Psiphon' node_prepare_docker || return 1; fi
-    _psiphon_install "$region" "$port" || return 1
+    psiphon_apply_settings "$PSIPHON_REGION" "$PSIPHON_PORT" || return 1
     psiphon_status || return 1
     info 'Добавьте outbound в профиль Xray вручную. Для него используйте маршрутизацию TCP.'
-    psiphon_outbound "$port"
+    psiphon_outbound "$PSIPHON_PORT"
 }
 
 psiphon_update() {
