@@ -2,10 +2,11 @@
 set -euo pipefail
 
 project=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
-if (( EUID != 0 )) || [[ ! -x /usr/sbin/sshd || ! -d /run/sshd ]]; then
+if (( EUID != 0 )) || [[ ! -x /usr/sbin/sshd ]]; then
     printf '%s\n' 'Запустите от root на отдельной Ubuntu с установленным openssh-server.' >&2
     exit 1
 fi
+if [[ ! -d /run/sshd ]]; then install -d -m 0755 /run/sshd; fi
 stage=$(mktemp -d /root/.remna-ssh-test.XXXXXX)
 port=$(python3 - <<'PY'
 import socket
