@@ -247,6 +247,8 @@ MENU_ACTIONS=(
     'components|2|Входящие порты и защита SSH|security'
     'components|3|Настроить TCP (BBR и fq)|bbr'
     'components|4|TrafficGuard против сканеров|update traffic-guard'
+    'components|5|Настроить Psiphon|psiphon'
+    'components|6|Шаблон Gemini для Psiphon|psiphon profile'
     'diagnostics|1|Статус ноды и компонентов|status'
     'diagnostics|2|Проверка портов и сервисов|doctor'
     'diagnostics|3|Логи ноды|logs'
@@ -260,10 +262,12 @@ MENU_ACTIONS=(
     'updates|3|Откатить версию скрипта|rollback tool'
     'updates|4|Обновить системные пакеты|update packages'
     'updates|5|Обновить TrafficGuard|update traffic-guard'
+    'updates|6|Обновить всё|update all'
+    'updates|7|Автообновления|auto-updates'
 )
 
 show_menu() {
-    local page=main parent title heading choice row section index label action notice='' id snapshots
+    local page=main parent title heading choice row section index label action notice='' id snapshots installed_version
     local -a command=()
     while true; do
         case "$page" in
@@ -354,5 +358,9 @@ show_menu() {
             warn 'Команда завершилась с ошибкой.'
         fi
         ui_pause 'вернуться в меню' || return 0
+        if [[ $action == 'update all' && -x ${RELEASE_COMMAND:-} ]]; then
+            installed_version=$("$RELEASE_COMMAND" --version) || return
+            if [[ $installed_version != "$UI_VERSION" ]]; then exec "$RELEASE_COMMAND"; fi
+        fi
     done
 }

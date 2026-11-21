@@ -39,6 +39,7 @@ load_config() { return 0; }
 _selfsteal_validate_domain() { [[ $1 == report && $dns == yes ]]; }
 bbr_status() { :; }
 security_os_updates_status() { :; }
+psiphon_is_managed() { return 1; }
 
 if selfsteal_status >/dev/null 2>&1; then exit 1; fi
 owned=yes

@@ -434,7 +434,7 @@ configure_traffic_guard() {
 
 apply_system_package_updates() {
     local plan=$1 ufw_active=no guard_active=no restart_nginx=no restart_caddy=no
-    local service
+    local service sshd_jail_active=no
     local -a check_services=()
     if security_ufw_active; then ufw_active=yes; fi
     if [[ -s $STATE_DIR/traffic-guard/version ]] && traffic_guard_firewall_active; then guard_active=yes; fi
@@ -446,6 +446,7 @@ apply_system_package_updates() {
     if grep -q $'^caddy\t' <<< "$plan" && systemctl is-active --quiet caddy.service; then restart_caddy=yes; fi
     if grep -q $'^fail2ban\t' <<< "$plan" && systemctl is-active --quiet fail2ban.service; then
         check_services+=(fail2ban.service)
+        if fail2ban-client status sshd >/dev/null 2>&1; then sshd_jail_active=yes; fi
     fi
     if grep -Eq '^(docker-ce|docker.io|containerd.io|containerd)[[:space:]]' <<< "$plan" &&
         systemctl is-active --quiet docker.service; then
@@ -470,10 +471,14 @@ apply_system_package_updates() {
             return 1
         fi
     done
+    if [[ $sshd_jail_active == yes ]] && ! fail2ban-client status sshd >/dev/null 2>&1; then
+        fail 'После обновления Fail2Ban не защищает SSH.'
+        return 1
+    fi
 }
 
-update_system_packages() {
-    local selected=$1 plan consent
+system_package_update_plan() {
+    local selected=${1-}
     local -a packages=(nginx nginx-common nginx-core nginx-full nginx-light nginx-extras libnginx-mod-stream
         caddy certbot python3-certbot python3-acme ufw fail2ban python3-systemd ipset iptables
         docker-ce docker-ce-cli docker-buildx-plugin docker-compose-plugin containerd.io docker.io docker-compose-v2 containerd)
@@ -484,18 +489,28 @@ update_system_packages() {
         fi
         packages=("$selected")
     fi
-    plan=$(apt_upgrade_installed_preview "${packages[@]}") || return
+    apt_upgrade_installed_preview "${packages[@]}"
+}
+
+update_system_packages() {
+    local plan effects consent ufw_state=inactive
+    plan=$(system_package_update_plan "$1") || return
     if [[ -z $plan ]]; then
         info 'Нет доступных обновлений выбранных установленных пакетов.'
         return 0
     fi
     awk -F '\t' '{printf "  %-23s %s → %s\n", $1, $2, $3}' <<< "$plan"
+    effects=$(apt_upgrade_installed_effects "$plan") || return
+    [[ -n $effects ]] || return 0
     ui_attention 'Обновление может перезапустить службы и прервать подключения.'
     if [[ $UI_INTERACTIVE == yes ]]; then
         consent=$(yes_no '  Установить эти обновления?' n) || return
         [[ $consent == yes ]] || return 0
     fi
-    if security_ufw_active && grep -Eq '^(ufw|ipset|iptables)[[:space:]]' <<< "$plan"; then
+    if update_effects_touch_network "$effects" && command -v ufw >/dev/null; then
+        ufw_state=$(security_ufw_state) || { fail 'Не удалось проверить состояние UFW.'; return 1; }
+    fi
+    if [[ $ufw_state == active ]]; then
         run_change network ui_run 'Обновление установленных пакетов' apply_system_package_updates "$plan" || return
     else
         ui_run 'Обновление установленных пакетов' apply_system_package_updates "$plan" || return
@@ -504,7 +519,7 @@ update_system_packages() {
 }
 
 update_node() {
-    local image
+    local image installed
     require_config || return
     if [[ $ENABLE_SECURITY == yes ]] && ! security_ufw_active; then
         fail 'Включите управляемый UFW через пункт «Порты и защита».'
@@ -512,6 +527,13 @@ update_node() {
     fi
     node_preflight || return
     image=$(node_release_image) || return
+    if [[ ${1-} == if-needed ]]; then
+        installed=$(jq -er '.services.remnanode.image' "$NODE_DIR/compose.yaml") || return
+        if [[ $image == "$installed" ]] && node_verify; then
+            info 'Нода актуальна.'
+            return 0
+        fi
+    fi
     node_prepare_image "$image" || return
     run_change node node_apply "$image"
 }
@@ -552,7 +574,11 @@ status_all() {
     if [[ -n $id ]]; then ui_network_confirmation; fi
     if ! load_config && ! load_host_settings; then
         node_status || :
-        info 'Начните с мастера или выберите отдельный компонент.'
+        if psiphon_is_managed; then
+            psiphon_status || :
+        else
+            info 'Начните с мастера или выберите отдельный компонент.'
+        fi
         return 0
     fi
     node_status || :
@@ -561,11 +587,13 @@ status_all() {
     if [[ -n $NODE_PORT || -n $VPN_PORTS ]]; then security_vpn_status || :; fi
     bbr_status
     traffic_guard_status
+    psiphon_status || :
 }
 
 doctor() {
     local result=0 listeners=''
     if ! load_config && ! load_host_settings; then
+        if psiphon_is_managed; then psiphon_status; return; fi
         fail 'Сначала настройте ноду или один из компонентов.'
         return 1
     fi
@@ -588,6 +616,7 @@ doctor() {
         if ! fail2ban-client status sshd >/dev/null 2>&1; then warn 'Fail2Ban для SSH недоступен.'; result=1; fi
     fi
     if [[ $ENABLE_TRAFFIC_GUARD == yes ]]; then traffic_guard_status required || result=1; fi
+    if psiphon_is_managed; then psiphon_status || result=1; fi
     security_os_updates_status
     bbr_status
     df -h -- "$STATE_DIR" "$BACKUP_DIR" || result=1
@@ -613,6 +642,15 @@ dispatch() (
         doctor) [[ $# == 1 ]] || return 2; doctor; return ;;
         dns) [[ $# -le 2 ]] || return 2; check_dns "$target"; return ;;
         logs) [[ $# == 1 ]] || return 2; node_logs; return ;;
+        auto-updates)
+            if [[ $# == 2 && $target == status ]]; then auto_update_status; return; fi
+            ;;
+        psiphon)
+            case "$target" in
+                status) [[ $# == 2 ]] || return 2; psiphon_status; return ;;
+                profile) [[ $# -le 3 ]] || return 2; psiphon_profile "${3-}"; return ;;
+            esac
+            ;;
     esac
     release_acquire_lock || return
     case "$action" in
@@ -642,11 +680,15 @@ dispatch() (
             ;;
         backup) [[ $# == 1 ]] || return 2; create_backup ;;
         restore) [[ $# == 2 ]] || return 2; do_restore "$target" ;;
+        auto-updates) [[ $# -le 2 ]] || return 2; auto_update_configure "$target" ;;
+        psiphon) [[ $# == 1 ]] || return 2; psiphon_configure ;;
         rollback) release_rollback ;;
         update)
             case "$target" in
                 tool) [[ $# -le 3 ]] || return 2; release_update "${3-}" ;;
-                node) [[ $# == 2 ]] || return 2; update_node ;;
+                node) [[ $# == 2 ]] || return 2; update_node force ;;
+                all) [[ $# == 2 ]] || return 2; update_all manual ;;
+                psiphon) [[ $# == 2 ]] || return 2; psiphon_update ;;
                 packages) [[ $# -le 3 ]] || return 2; update_system_packages "${3-}" ;;
                 traffic-guard)
                     [[ $# == 2 ]] || return 2

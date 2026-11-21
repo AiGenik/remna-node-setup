@@ -87,4 +87,7 @@ result=0
 run_change network mutate || result=$?
 [[ $result == 124 && -e $fixture/restored && ! -e $fixture/late-write && ! -e $PENDING_FILE ]]
 
+run_change network --verified-network true
+[[ ! -e $PENDING_FILE ]]
+
 printf '%s\n' 'Проверены таймер процесса, последовательность отката, состояние UFW и свежий транспорт SSH.'

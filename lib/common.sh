@@ -116,11 +116,13 @@ _apt_package_plan() {
     done
 }
 
-_apt_apply_package_plan() {
-    local mode=$1 plan=$2 package before candidate extra installed target
+_apt_run_package_plan() {
+    local mode=$1 plan=$2 action=$3 package before candidate extra installed target
+    local simulation effects
     local -a selection=() options=()
     [[ -n $plan ]] || return 0
     if [[ $mode == upgrade ]]; then options+=(--only-upgrade); fi
+    if [[ $action == simulate ]]; then options+=(--simulate); fi
     while IFS=$'\t' read -r package before candidate extra; do
         if [[ ! $package =~ ^[a-z0-9][a-z0-9+.-]+$ ||
               ! $candidate =~ ^[0-9][a-zA-Z0-9.+:~-]*$ || -n $extra ]]; then
@@ -140,11 +142,46 @@ _apt_apply_package_plan() {
 
     # Keep existing dpkg conffiles. Dependencies may be added, but APT must
     # reject removals, downgrades, untrusted downloads, and held-package changes.
-    DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 \
-        -o DPkg::Options::=--force-confold -o APT::Ignore-Hold=false \
-        -o APT::Get::allow-change-held-packages=false -o APT::Get::allow-downgrades=false \
-        -o APT::Get::allow-unauthenticated=false -o APT::Get::force-yes=false \
-        install -y --no-install-recommends --no-remove "${options[@]}" "${selection[@]}" || {
+    local -a apt_args=(
+        -o DPkg::Lock::Timeout=120
+        -o DPkg::Options::=--force-confold -o APT::Ignore-Hold=false
+        -o APT::Get::allow-change-held-packages=false -o APT::Get::allow-downgrades=false
+        -o APT::Get::allow-unauthenticated=false -o APT::Get::force-yes=false
+        install -y --no-install-recommends --no-remove "${options[@]}" "${selection[@]}"
+    )
+    if [[ $action == simulate ]]; then
+        if ! simulation=$(LC_ALL=C DEBIAN_FRONTEND=noninteractive apt-get "${apt_args[@]}"); then
+            if [[ -n $simulation ]]; then printf '%s\n' "$simulation" >&2; fi
+            fail 'APT не смог рассчитать изменения пакетов.'
+            return 1
+        fi
+        effects=$(awk '
+            $1 == "Remv" || $1 == "Purg" { invalid = 1 }
+            $1 == "Inst" {
+                if ($2 !~ /^[a-z0-9][a-z0-9+.-]+(:[a-z0-9-]+)?$/) { invalid = 1; next }
+                name = $2
+                sub(/:.*/, "", name)
+                if (!seen[name]++) ordered[++count] = name
+            }
+            END {
+                if (invalid) exit 1
+                for (i = 1; i <= count; ++i) print ordered[i]
+            }
+        ' <<< "$simulation") || {
+            fail 'APT вернул непонятный план изменения пакетов.'
+            return 1
+        }
+        for target in "${selection[@]}"; do
+            package=${target%%=*}
+            if ! grep -Fxq -- "$package" <<< "$effects"; then
+                fail "APT не подтвердил изменение $package. Повторите проверку пакетов."
+                return 1
+            fi
+        done
+        printf '%s\n' "$effects"
+        return 0
+    fi
+    DEBIAN_FRONTEND=noninteractive apt-get "${apt_args[@]}" || {
         fail 'APT не завершил установку выбранных пакетов.'
         return 1
     }
@@ -164,7 +201,7 @@ apt_install_current() {
     (( $# )) || return 0
     _apt_refresh_indexes || return 1
     plan=$(_apt_package_plan install "$@") || return 1
-    _apt_apply_package_plan install "$plan"
+    _apt_run_package_plan install "$plan" apply
 }
 
 apt_upgrade_installed_preview() {
@@ -174,7 +211,11 @@ apt_upgrade_installed_preview() {
 }
 
 apt_upgrade_installed_apply() {
-    _apt_apply_package_plan upgrade "$1"
+    _apt_run_package_plan upgrade "$1" apply
+}
+
+apt_upgrade_installed_effects() {
+    _apt_run_package_plan upgrade "$1" simulate
 }
 
 normalize_ips() {

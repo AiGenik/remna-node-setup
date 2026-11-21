@@ -494,8 +494,12 @@ restore_interrupted_change() {
 }
 
 run_change() (
-    local scope=$1 id changed=no committed=no result=0
+    local scope=$1 id changed=no committed=no result=0 confirmation=ssh
     shift
+    if [[ ${1-} == --verified-network ]]; then
+        confirmation=verified
+        shift
+    fi
     id=$(capture_snapshot "$scope") || return
     info "Снимок $id."
     trap 'finish_change "$?" "$scope" "$id" "$changed" "$committed"' EXIT
@@ -514,12 +518,16 @@ run_change() (
         # over a worker that could still finish a write.
         if (( result == 125 )); then changed=no; fi
         if (( result != 0 )); then return "$result"; fi
-        network_mark_applied "$id" || return
+        if [[ $confirmation == verified ]]; then
+            disarm_rollback || return
+        else
+            network_mark_applied "$id" || return
+        fi
     else
         "$@" || return
     fi
     committed=yes
-    if has_scope "$scope" network; then
+    if [[ $confirmation == ssh ]] && has_scope "$scope" network; then
         ui_network_confirmation
     fi
 )

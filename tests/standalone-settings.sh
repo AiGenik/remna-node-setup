@@ -117,3 +117,6 @@ printf '%s\n' 'Standalone-компоненты, настройки и облас
 bash "$PROJECT_DIR/tests/node-image-updates.sh"
 bash "$PROJECT_DIR/tests/diagnostics.sh"
 bash "$PROJECT_DIR/tests/network-rollback.sh"
+bash "$PROJECT_DIR/tests/auto-update.sh"
+bash "$PROJECT_DIR/tests/combined-updates.sh"
+bash "$PROJECT_DIR/tests/psiphon-smoke.sh"

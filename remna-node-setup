@@ -31,6 +31,14 @@ source "$PROJECT_DIR/lib/transaction.sh"
 source "$PROJECT_DIR/lib/manager.sh"
 # shellcheck source=lib/standalone.sh
 source "$PROJECT_DIR/lib/standalone.sh"
+# shellcheck source=lib/auto-update.sh
+source "$PROJECT_DIR/lib/auto-update.sh"
+# shellcheck source=lib/psiphon.sh
+source "$PROJECT_DIR/lib/psiphon.sh"
+# shellcheck source=lib/psiphon-profile.sh
+source "$PROJECT_DIR/lib/psiphon-profile.sh"
+# shellcheck source=lib/updates.sh
+source "$PROJECT_DIR/lib/updates.sh"
 
 usage() {
     cat <<'HELP'
@@ -52,6 +60,12 @@ Remna Node Setup
   remna-node-setup update node          Обновить до стабильной версии ноды
   remna-node-setup update packages [пакет] Обновить установленные пакеты через APT
   remna-node-setup update traffic-guard Обновить TrafficGuard и список сканеров
+  remna-node-setup update all           Обновить установленные компоненты
+  remna-node-setup auto-updates [enable|disable|status] Управлять автообновлениями
+  remna-node-setup psiphon               Настроить локальный выход Psiphon
+  remna-node-setup psiphon status        Проверить Psiphon
+  remna-node-setup psiphon profile [IP]  Сформировать шаблон Gemini для Remnawave
+  remna-node-setup update psiphon        Обновить управляемый Psiphon
   remna-node-setup rollback tool        Вернуть предыдущую версию скрипта
   remna-node-setup rollback            Отменить ожидающее подтверждения изменение
   remna-node-setup confirm             Подтвердить из нового SSH-сеанса
@@ -66,7 +80,8 @@ self_test() {
         security_prompt_vpn_ports security_vpn_status security_os_updates_status bbr_apply traffic_guard_prepare traffic_guard_apply \
         traffic_guard_capture_runtime traffic_guard_restore_before_ufw traffic_guard_restore_after_ufw \
         release_update release_rollback release_acquire_lock install_wizard restore_snapshot \
-        load_host_settings standalone_selfsteal standalone_security standalone_bbr standalone_traffic_guard; do
+        load_host_settings standalone_selfsteal standalone_security standalone_bbr standalone_traffic_guard \
+        auto_update_enabled psiphon_configure psiphon_is_managed psiphon_outbound update_all; do
         declare -F "$name" >/dev/null || { fail "Не загружен модуль $name."; return 1; }
     done
     [[ -r $PROJECT_DIR/lib/secret-input.py ]] || { fail 'Модуль ввода ключа отсутствует.'; return 1; }
@@ -90,6 +105,31 @@ if [[ ${1-} == __network-timeout ]]; then
 fi
 
 ui_init
+case "${1-}" in
+    __auto-update)
+        [[ $# == 1 ]] || exit 2
+        auto_update_enabled || exit 0
+        release_acquire_lock nowait || exit 0
+        auto_update_enabled || exit 0
+        if [[ -n $(pending_id) ]]; then
+            info 'Автообновление пропущено. Сеть ждёт подтверждения SSH.'
+            exit 0
+        fi
+        update_all auto
+        exit
+        ;;
+    __apply-updates)
+        [[ $# == 3 && $2 =~ ^(manual|auto)$ && $3 =~ ^[01]$ ]] || exit 2
+        if [[ ! $RELEASE_LOCK -ef /proc/self/fd/9 ]] || ! flock -xn 9; then
+            fail 'Обновление потеряло блокировку. Запустите его ещё раз.'
+            exit 1
+        fi
+        if [[ $2 == auto ]]; then auto_update_enabled || exit 0; fi
+        require_no_pending
+        apply_combined_updates "$2" "$3"
+        exit
+        ;;
+esac
 if (( $# == 0 )); then
     show_menu
     exit

@@ -13,6 +13,7 @@ status_db=$test_dir/installed
 versions_db=$test_dir/candidates
 holds_db=$test_dir/holds
 UPDATE_FAILURE=no
+SIMULATION=ok
 
 dpkg-query() {
     local package=${*: -1}
@@ -48,6 +49,30 @@ apt-get() {
         return 0
     fi
     [[ " $* " == *' install '* ]] || return 1
+    if [[ " $* " == *' --simulate '* ]]; then
+        [[ $LC_ALL == C ]] || return 1
+        case $SIMULATION in
+            ok)
+                printf '%s\n' 'Reading package lists...' \
+                    'Inst libxtables12:arm64 [1.0] (1.1 Ubuntu:24.04/noble-updates [arm64])' \
+                    'Inst ufw [1:0.36-1] (1:0.37-2~ubuntu2 Ubuntu:24.04/noble-updates [all])' \
+                    'Inst libxtables12:amd64 [1.0] (1.1 Ubuntu:24.04/noble-updates [amd64])' \
+                    'Conf ignored-package (1.0 Ubuntu:24.04/noble-updates [all])'
+                ;;
+            failed)
+                printf '%s\n' 'Dependency resolution failed' 'Inst ufw [1:0.36-1] (1:0.37-2~ubuntu2)'
+                return 100
+                ;;
+            removal)
+                printf '%s\n' 'Remv old-package [1.2.0]' 'Inst ufw [1:0.36-1] (1:0.37-2~ubuntu2)'
+                ;;
+            invalid)
+                printf '%s\n' 'Inst malformed/name (1.2.0)' 'Inst ufw [1:0.36-1] (1:0.37-2~ubuntu2)'
+                ;;
+            incomplete) printf '%s\n' 'Inst libxtables12:arm64 (1.1)' ;;
+        esac
+        return 0
+    fi
     for argument in "$@"; do
         case "$argument" in
             ufw=*|fail2ban=*|nginx=*|certbot=*)
@@ -77,6 +102,16 @@ grep -Fq 'fail2ban: пропущен из-за apt-mark hold.' "$errors"
 grep -Fq 'certbot: установленная версия новее' "$errors"
 (( $(wc -l < "$log") == 1 ))
 
+effects=$(apt_upgrade_installed_effects "$plan")
+[[ $effects == $'libxtables12\nufw' ]]
+[[ $(apt_installed_version ufw) == '1:0.36-1' ]]
+grep -Fq 'install -y --no-install-recommends --no-remove --only-upgrade --simulate ufw=1:0.37-2~ubuntu2' "$log"
+for SIMULATION in failed removal invalid incomplete; do
+    if effects=$(apt_upgrade_installed_effects "$plan" 2>"$errors"); then exit 1; fi
+    [[ -z $effects && -s $errors ]]
+done
+SIMULATION=ok
+
 apt_upgrade_installed_apply "$plan"
 grep -Fq 'DPkg::Lock::Timeout=120' "$log"
 grep -Fq 'DPkg::Options::=--force-confold' "$log"
@@ -88,6 +123,8 @@ grep -Fq 'install -y --no-install-recommends --no-remove --only-upgrade ufw=1:0.
 [[ -z $(apt_installed_version nginx) ]]
 
 : > "$log"
+effects=$(apt_upgrade_installed_effects "$plan")
+[[ -z $effects && ! -s $log ]]
 printf 'installed\t%s\n' '1:0.38-1' > "$status_db/ufw"
 if apt_upgrade_installed_apply "$plan" > /dev/null 2>"$errors"; then exit 1; fi
 grep -Fq 'Версия пакета ufw изменилась.' "$errors"
