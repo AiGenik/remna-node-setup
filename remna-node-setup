@@ -39,6 +39,8 @@ source "$PROJECT_DIR/lib/psiphon.sh"
 source "$PROJECT_DIR/lib/psiphon-profile.sh"
 # shellcheck source=lib/updates.sh
 source "$PROJECT_DIR/lib/updates.sh"
+# shellcheck source=lib/port-preflight.sh
+source "$PROJECT_DIR/lib/port-preflight.sh"
 
 usage() {
     cat <<'HELP'
@@ -52,6 +54,7 @@ Remna Node Setup
   remna-node-setup bbr                 Включить BBR и fq
   remna-node-setup status              Статус
   remna-node-setup doctor              Диагностика
+  remna-node-setup preflight           Проверить порты и связь с панели до установки
   remna-node-setup dns [домен]         Проверить A/AAAA и IP этого VPS
   remna-node-setup logs                Последние сообщения ноды
   remna-node-setup backup              Сохранить конфигурацию
@@ -82,11 +85,12 @@ self_test() {
         release_update release_rollback release_acquire_lock install_wizard restore_snapshot \
         load_host_settings standalone_selfsteal standalone_security standalone_bbr standalone_traffic_guard \
         auto_update_enabled psiphon_configure psiphon_is_managed psiphon_select_settings \
-        psiphon_apply_settings psiphon_profile psiphon_outbound update_all; do
+        psiphon_apply_settings psiphon_profile psiphon_outbound update_all standalone_port_preflight; do
         declare -F "$name" >/dev/null || { fail "Не загружен модуль $name."; return 1; }
     done
     [[ -r $PROJECT_DIR/lib/secret-input.py ]] || { fail 'Модуль ввода ключа отсутствует.'; return 1; }
     [[ -r $PROJECT_DIR/lib/selfsteal-dns.py ]] || { fail 'Модуль проверки DNS отсутствует.'; return 1; }
+    [[ -r $PROJECT_DIR/lib/port-probe.py ]] || { fail 'Модуль сетевой проверки отсутствует.'; return 1; }
     jq -e 'type == "object" and (.version | test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))' "$PROJECT_DIR/versions.json" >/dev/null
 }
 

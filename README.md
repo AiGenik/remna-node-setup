@@ -15,6 +15,8 @@ f=$(mktemp) && curl -q -fsSLo "$f" --proto =https https://raw.githubusercontent.
 - **Только нода** — Docker и Remnawave Node.
 - **Нода и компоненты** — нода и защита, с выбором self-steal, BBR, TrafficGuard и Gemini через Psiphon.
 
+Перед общей установкой мастер проверяет порты и предлагает проверить передачу данных с сервера панели. Отдельно проверка находится в меню «Диагностика».
+
 После изменения firewall подтвердите доступ командой `sudo remna-node-setup confirm` из нового SSH-сеанса.
 
 ## Уже установлен

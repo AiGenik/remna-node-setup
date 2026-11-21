@@ -254,6 +254,7 @@ MENU_ACTIONS=(
     'diagnostics|2|Проверка портов и сервисов|doctor'
     'diagnostics|3|Логи ноды|logs'
     'diagnostics|4|Проверить DNS домена|dns'
+    'diagnostics|5|Проверить связь до установки|preflight'
     'recovery|1|Сохранить снимок|backup'
     'recovery|2|Восстановить снимок|restore'
     'recovery|3|Подтвердить сетевые настройки|confirm'

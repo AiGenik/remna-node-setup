@@ -198,7 +198,7 @@ install_wizard() {
     local UI_PROGRESS_DONE=0
     local -a UI_INSTALL_PHASES=('Docker и образ ноды')
     if [[ $mode == full ]]; then
-        steps=5
+        steps=6
         scope+=' network'
         UI_INSTALL_TITLE='Установка ноды и компонентов'
     fi
@@ -299,6 +299,14 @@ install_wizard() {
     fi
 
     node_preflight || return
+    if [[ $mode == full ]]; then
+        ui_step 5 'Проверка соединения' "$steps"
+        if ! port_preflight install "$NODE_PORT" "$VPN_PORTS" "$PANEL_IPS" "$NODE_DOMAIN"; then
+            if [[ $UI_INTERACTIVE != yes ]]; then return 1; fi
+            consent=$(yes_no '  Продолжить установку без успешной проверки?' n) || return
+            if [[ $consent != yes ]]; then info 'Установка отменена.'; return 0; fi
+        fi
+    fi
     ui_step "$steps" 'Проверка настроек' "$steps"
     if [[ -n $NODE_DOMAIN ]]; then info "  Адрес      $NODE_DOMAIN"; fi
     info "  Node Port  $NODE_PORT/tcp"
@@ -687,6 +695,7 @@ dispatch() (
             [[ $# == 1 ]] || return 2
             if [[ -e $CONFIG_DIR/node.json ]]; then configure_bbr; else standalone_bbr; fi
             ;;
+        preflight) [[ $# == 1 ]] || return 2; standalone_port_preflight ;;
         backup) [[ $# == 1 ]] || return 2; create_backup ;;
         restore) [[ $# == 2 ]] || return 2; do_restore "$target" ;;
         auto-updates) [[ $# -le 2 ]] || return 2; auto_update_configure "$target" ;;

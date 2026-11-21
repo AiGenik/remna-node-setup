@@ -25,6 +25,7 @@ source lib/manager.sh
 source lib/security.sh
 source lib/standalone.sh
 source lib/psiphon.sh
+source lib/port-preflight.sh
 PROJECT_DIR=$PWD
 CONFIG_DIR=$(mktemp -d)
 STATE_DIR=$CONFIG_DIR
@@ -33,6 +34,9 @@ apt_install_missing() { :; }
 get_admin_ip() { ADMIN_IP=198.51.100.8; }
 detect_ssh_port() { printf '2202\n'; }
 security_detect_vpn_ports() { printf '9443/tcp\n'; }
+ss() {
+    if [[ ${FAIL_PREFLIGHT:-no} == yes && $2 == 'sport = :2443' ]]; then printf 'TEST-OTHER-SERVICE\n'; fi
+}
 security_preflight() { :; }
 node_preflight() { :; }
 selfsteal_preflight() { :; }
@@ -78,6 +82,7 @@ run_change() {
 dispatch() {
     case "$1" in
         install) install_wizard "${2-}" ;;
+        preflight) standalone_port_preflight ;;
         status) printf 'TEST-NODE-STATUS\n' ;;
         update) [[ $2 == tool ]] ;;
     esac
@@ -227,6 +232,10 @@ with Terminal() as terminal:
     terminal.enter("192.0.2.25")
     terminal.expect("Входящие порты VPN → [9443/tcp]")
     terminal.enter("9443/tcp 2443/udp")
+    screen = without_ansi(terminal.expect("Запустить проверку с панели? [Y/n]"))
+    assert "Проверка соединения" in screen and "8443/tcp · локальный self-steal" in screen
+    assert "3333/tcp · панель → нода" in screen and "9443/tcp · VPN" in screen
+    terminal.enter("n")
     screen = terminal.expect("Начать установку? [y/N]")
     assert KEY_MARKER.encode() not in screen
     assert b"3333" in screen and b"nginx" in screen and b"9443/tcp 2443/udp" in screen
@@ -258,6 +267,15 @@ assert "TEST-PSIPHON" not in plain.stdout
 assert "Домен self-steal →" not in plain.stderr and "Адрес ноды →" not in plain.stderr
 assert "\x1b" not in plain.stdout + plain.stderr
 assert TEST_KEY not in plain.stdout + plain.stderr
+
+preflight_failed = subprocess.run(
+    ["bash", "-c", FIXTURE, "ui-test", "install_wizard"],
+    cwd=ROOT, env={**ENV, "EXPECTED_WEBSERVER": "caddy", "EXPECTED_MODE": "full", "FAIL_PREFLIGHT": "yes"},
+    input="\n".join([*base_inputs, "n", *network_inputs]), capture_output=True, text=True,
+)
+assert preflight_failed.returncode == 1
+assert "Порт 2443/udp занят" in preflight_failed.stderr
+assert "TEST-APPLIED" not in preflight_failed.stdout and "Начать установку" not in preflight_failed.stderr
 
 psiphon_failed = subprocess.run(
     ["bash", "-c", FIXTURE, "ui-test", "install_wizard"],
@@ -350,10 +368,28 @@ with Terminal(pending=True, no_color=True) as terminal:
 
 with Terminal() as terminal:
     terminal.expect("Номер пункта →")
+    terminal.enter("4")
+    assert "Проверить связь до установки".encode() in terminal.expect("Номер пункта →")
+    terminal.enter("5")
+    terminal.expect("Node Port из карточки ноды → [2222]")
+    terminal.enter()
+    terminal.expect("Порты VPN (TCP/UDP) → [443/tcp 9443/tcp]")
+    terminal.enter()
+    screen = without_ansi(terminal.expect("Запустить проверку с панели? [Y/n]"))
+    assert all(f"{port}/tcp" in screen for port in (2222, 443, 8443, 9443))
+    terminal.enter("n")
+    terminal.expect("Enter — вернуться в меню")
+    terminal.enter()
+    terminal.expect("Номер пункта →")
+    terminal.enter("q")
+    assert terminal.process.wait(timeout=5) == 0
+
+with Terminal() as terminal:
+    terminal.expect("Номер пункта →")
     terminal.enter("5")
     terminal.expect("Номер пункта →")
     terminal.enter("1")
     terminal.expect("TEST-REOPENED")
     assert terminal.process.wait(timeout=5) == 0
 
-print("Проверены компактное меню, мастер Gemini, прогресс, скрытый ввод и перезапуск меню.")
+print("Проверены мастер и отдельная проверка портов, Gemini, прогресс и перезапуск меню.")
