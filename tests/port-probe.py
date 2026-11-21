@@ -1,3 +1,4 @@
+import json
 import shlex
 import socket
 import subprocess
@@ -9,9 +10,11 @@ from pathlib import Path
 PROBE = Path(__file__).resolve().parents[1] / "lib/port-probe.py"
 SERVER = '''
 import asyncio, ipaddress, runpy, sys
-path, source, *ports = sys.argv[1:]
+path, source, mode, *ports = sys.argv[1:]
 probe = runpy.run_path(path)["probe"]
-sys.exit(not asyncio.run(probe("127.0.0.1", {ipaddress.ip_address(source)}, list(map(int, ports)), 2)))
+ticket = "a" * 32 if mode == "auto" else None
+sys.exit(not asyncio.run(probe("127.0.0.1", {ipaddress.ip_address(source)}, list(map(int, ports)),
+                              2, ticket=ticket)))
 '''
 
 
@@ -24,7 +27,7 @@ def reserve(host="127.0.0.1"):
 @contextmanager
 def running(source, *ports):
     with subprocess.Popen(
-        [sys.executable, "-u", "-c", SERVER, str(PROBE), source, *map(str, ports)],
+        [sys.executable, "-u", "-c", SERVER, str(PROBE), source, "manual", *map(str, ports)],
         stdout=subprocess.PIPE, text=True,
     ) as process:
         try:
@@ -66,6 +69,20 @@ with running("127.0.0.1", first_port) as (server, _, token):
         connection.sendall(token.encode() * 64)
     output, _ = server.communicate(timeout=4)
     assert server.returncode == 1 and "TCP открыт, тестовые данные не дошли целиком" in output
+
+with subprocess.Popen([sys.executable, "-u", "-c", SERVER, str(PROBE), "127.0.0.1", "auto", str(first_port)],
+                      stdout=subprocess.PIPE) as server:
+    frame = bytearray()
+    for byte in iter(lambda: server.stdout.read(1), b""):
+        if byte == b"\x1f":
+            break
+        frame.extend(byte)
+    token = json.loads(frame.removeprefix(b"\x1e"))["token"]
+    with socket.create_connection(("127.0.0.1", first_port), timeout=2) as connection:
+        connection.sendall(token.encode() * 64)
+    report, _ = server.communicate(timeout=4)
+    assert server.returncode == 1
+    assert report.decode().splitlines() == [f"  × {first_port:>5}/tcp · TCP открыт, данные дошли не полностью."]
 
 with running("127.0.0.2", first_port) as (server, command, _):
     client = subprocess.run(["bash", "-c", command], capture_output=True, text=True, timeout=6)

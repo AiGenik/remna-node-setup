@@ -84,7 +84,7 @@ port_preflight() {
         fi
         if ! python3 "$PROJECT_DIR/lib/port-probe.py" --launcher "$SSH_MENU_TICKET" "$tls" \
             "$SSH_PANEL_PROBE_HOST" "$source_ips" "${probe_ports[@]}"; then
-            ui_attention 'Проверка с панели не прошла. Смотрите результат по портам.'
+            ui_attention 'Проверка не пройдена.'
             return 1
         fi
         if [[ $mode == install ]]; then ui_pause 'продолжить'; fi

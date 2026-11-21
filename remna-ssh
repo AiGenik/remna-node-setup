@@ -23,6 +23,7 @@ import sys
 
 panel, host, ticket, *command = sys.argv[1:]
 panel_client = '''from concurrent.futures import ThreadPoolExecutor
+import json
 import socket
 import ssl
 import sys
@@ -31,18 +32,33 @@ host, token, tls_port, *ports = sys.argv[1:]
 ack = token.encode()
 body = ack * 128
 tls_status = b""
-if tls_port != "0":
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    context.check_hostname = False
-    context.verify_mode = ssl.CERT_NONE
+
+def check_tls(port):
     try:
-        with socket.create_connection((host, int(tls_port)), timeout=4) as conn:
-            with context.wrap_socket(conn, server_hostname=host) as tls:
-                print(f"✓ {tls_port}/tcp · отвечает {tls.version()}", flush=True)
-        tls_status = b"+"
-    except (OSError, ValueError) as exc:
-        print(f"× {tls_port}/tcp · TLS: {exc}", flush=True)
-        tls_status = b"-"
+        conn = socket.create_connection((host, int(port)), timeout=4)
+    except socket.gaierror:
+        return "dns"
+    except TimeoutError:
+        return "tcp_timeout"
+    except ConnectionRefusedError:
+        return "refused"
+    except OSError:
+        return "unreachable"
+    with conn:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        try:
+            with context.wrap_socket(conn, server_hostname=host):
+                return "ok"
+        except TimeoutError:
+            return "tls_timeout"
+        except (OSError, ValueError):
+            return "tls_error"
+
+tls_result = check_tls(tls_port) if tls_port != "0" else None
+if tls_result is not None:
+    tls_status = b"+" if tls_result == "ok" else b"-"
 
 def check(port):
     try:
@@ -50,17 +66,15 @@ def check(port):
             conn.sendall(body)
             with conn.makefile("rb") as reply:
                 if reply.read(len(body)) != body:
-                    raise OSError("неполный ответ")
+                    return False
                 conn.sendall(ack + tls_status)
-                if reply.read(1) != b"+":
-                    raise OSError("нет подтверждения")
-        return True
-    except OSError as exc:
-        print(f"× {port}/tcp · {exc}", flush=True)
+                return reply.read(1) == b"+"
+    except OSError:
         return False
 
 with ThreadPoolExecutor(max_workers=8) as pool:
     passed = list(pool.map(check, ports))
+print(json.dumps(tls_result), flush=True)
 sys.exit(not all(passed) or tls_status == b"-")
 '''
 
@@ -69,6 +83,22 @@ seen = set()
 
 def valid_port(value):
     return type(value) is int and 1 <= value <= 65535
+
+
+def report_line(message):
+    # The foreground SSH client may put the local terminal in raw mode.
+    print(f"\r  {message}", end="\r\n", flush=True)
+
+
+TLS_MESSAGES = {
+    "ok": "TLS отвечает.",
+    "dns": "Адрес ноды не найден.",
+    "tcp_timeout": "Панель не дождалась подключения.",
+    "refused": "Подключение отклонено.",
+    "unreachable": "Панель не подключилась.",
+    "tls_timeout": "TCP открыт, TLS не ответил вовремя.",
+    "tls_error": "TCP открыт, TLS не установился.",
+}
 
 
 def run_probe(frame):
@@ -89,18 +119,27 @@ def run_probe(frame):
         return
     seen.add(token)
     args = shlex.join([host, token, str(tls or 0), *map(str, ports)])
-    print(f"  Проверка с панели {panel}…", flush=True)
+    report_line(f"Проверка с панели {panel}")
     try:
         result = subprocess.run(
             ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=6",
              "-o", "ControlPath=none", "-o", "ControlMaster=no", "-o", "ClearAllForwardings=yes", "-o", "ForwardAgent=no",
              "-o", "RemoteCommand=none", panel, "python3 -I - " + args],
-            input=panel_client, text=True, timeout=24,
+            input=panel_client, text=True, capture_output=True, timeout=24,
         )
         if result.returncode == 255:
-            print("  SSH-вход на панель не удался. Проверьте SSH-алиас и ключ.", flush=True)
+            report_line("Не удалось войти на панель по SSH.")
+            return
+        state = json.loads(result.stdout)
+        if tls is not None:
+            if not isinstance(state, str) or state not in TLS_MESSAGES:
+                raise ValueError("invalid TLS result")
+            mark = "✓" if state == "ok" else "×"
+            report_line(f"{mark} {tls:>5}/tcp · {TLS_MESSAGES[state]}")
     except (OSError, subprocess.TimeoutExpired):
-        print("  Проверка с панели прервана. Проверьте SSH-подключение.", flush=True)
+        report_line("Проверка с панели прервана.")
+    except ValueError:
+        report_line("Панель не вернула результат проверки.")
 
 
 def relay(stream):

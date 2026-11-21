@@ -37,7 +37,7 @@ sys.exit(failed)
 
 def request_panel(ticket, token, ports, tls_port):
     request = {"ticket": ticket, "token": token, "ports": list(ports), "tls": tls_port}
-    print("\x1e" + json.dumps(request, separators=(",", ":")) + "\x1f", flush=True)
+    print("\x1e" + json.dumps(request, separators=(",", ":")) + "\x1f", end="", flush=True)
 
 
 async def probe(host, sources, ports, seconds=SECONDS, *, ticket=None, tls_port=None):
@@ -78,8 +78,9 @@ async def probe(host, sources, ports, seconds=SECONDS, *, ticket=None, tls_port=
                 writer.write(b"+")
                 await writer.drain()
             if port not in passed:
-                print(f"✓ {port}/tcp · обмен с {remote} прошёл", flush=True)
                 passed.add(port)
+                if ticket is None:
+                    print(f"✓ {port}/tcp · обмен с {remote} прошёл", flush=True)
             if passed == servers.keys():
                 done.set()
         except (OSError, TimeoutError, asyncio.IncompleteReadError):
@@ -99,7 +100,8 @@ async def probe(host, sources, ports, seconds=SECONDS, *, ticket=None, tls_port=
                 for listener in listeners:
                     listener.close()
                 await asyncio.gather(*(listener.wait_closed() for listener in listeners))
-                print(f"× {port}/tcp · не удалось запустить тест: {exc.strerror}", flush=True)
+                if ticket is None:
+                    print(f"× {port}/tcp · не удалось запустить тест: {exc.strerror}", flush=True)
             else:
                 servers[port] = listeners
         if ticket is not None and (servers or tls_port is not None):
@@ -113,6 +115,21 @@ async def probe(host, sources, ports, seconds=SECONDS, *, ticket=None, tls_port=
                 await asyncio.wait_for(done.wait(), seconds)
             except TimeoutError:
                 pass
+        if ticket is not None:
+            for port in ports:
+                mark = "✓" if port in passed else "×"
+                if port in passed:
+                    status = "Данные прошли в обе стороны."
+                elif port not in servers:
+                    status = "Порт недоступен для теста."
+                elif port in received:
+                    status = "Запрос дошёл, ответ не подтверждён."
+                elif port in connected:
+                    status = "TCP открыт, данные дошли не полностью."
+                else:
+                    status = "Панель не подключилась."
+                print(f"  {mark} {port:>5}/tcp · {status}")
+        else:
             for port in servers:
                 if port in passed:
                     continue

@@ -54,7 +54,7 @@ with tempfile.TemporaryDirectory() as directory:
 
     def test(tls_port):
         return subprocess.run(["bash", str(ROOT / "remna-ssh"), "--panel", "panel-alias", "node-alias"],
-                              capture_output=True, text=True, timeout=12,
+                              capture_output=True, timeout=12,
                               env={**env, "REMNA_TEST_PORT": free_port(), "REMNA_TLS_PORT": tls_port})
 
     cert, key = fixture / "cert.pem", fixture / "key.pem"
@@ -80,16 +80,45 @@ with tempfile.TemporaryDirectory() as directory:
         assert not thread.is_alive()
 
     assert passed.returncode == 0, passed
-    assert "Проверка с панели panel-alias" in passed.stdout
-    assert "отвечает TLS" in passed.stdout and "обмен с 127.0.0.1 прошёл" in passed.stdout
-    assert "REMNA_PROBE" not in passed.stdout and "\x1e" not in passed.stdout
+    success = passed.stdout.decode()
+    assert "\r  Проверка с панели panel-alias\r\n" in success
+    assert "\r  ✓ " in success and "TLS отвечает.\r\n  ✓ " in success
+    assert success.count("Данные прошли в обе стороны.") == 1
+    assert "REMNA_PROBE" not in success and "\x1e" not in success
     assert trace.read_text() == "panel\n"
 
     with socket.socket() as closed_tls:
         closed_tls.bind(("127.0.0.1", 0))
         failed = test(str(closed_tls.getsockname()[1]))
     assert failed.returncode == 1, failed
-    assert "TLS:" in failed.stdout and "обмен с 127.0.0.1 прошёл" in failed.stdout
+    failure = failed.stdout.decode()
+    assert "\r  × " in failure
+    assert any(message + "\r\n" in failure for message in (
+        "Подключение отклонено.", "Панель не дождалась подключения."
+    )), failure
+    assert failure.count("Данные прошли в обе стороны.") == 1
     assert trace.read_text() == "panel\npanel\n"
 
-print("Проверены автоматический запуск с панели, TLS, TCP и отклонение чужого запроса.")
+    with socket.socket() as stalled_tls:
+        stalled_tls.bind(("127.0.0.1", 0))
+        stalled_tls.listen()
+        stalled_tls.settimeout(8)
+
+        def wait_for_disconnect():
+            connection, _ = stalled_tls.accept()
+            with connection:
+                connection.settimeout(8)
+                while connection.recv(4096):
+                    pass
+
+        thread = threading.Thread(target=wait_for_disconnect, daemon=True)
+        thread.start()
+        stalled = test(str(stalled_tls.getsockname()[1]))
+        thread.join(timeout=8)
+        assert not thread.is_alive()
+    assert stalled.returncode == 1, stalled
+    report = stalled.stdout.decode()
+    assert "TCP открыт, TLS не ответил вовремя.\r\n" in report, report
+    assert "timed out" not in report and "_ssl" not in report
+
+print("Проверены автоматический запуск, выравнивание отчёта и причины ошибок на русском.")

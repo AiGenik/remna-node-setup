@@ -303,7 +303,7 @@ install_wizard() {
         ui_step 5 'Проверка соединения' "$steps"
         if ! port_preflight install "$NODE_PORT" "$VPN_PORTS" "$PANEL_IPS" "$NODE_DOMAIN"; then
             if [[ $UI_INTERACTIVE != yes ]]; then return 1; fi
-            consent=$(yes_no '  Продолжить установку без успешной проверки?' n) || return
+            consent=$(yes_no '  Продолжить установку?' n) || return
             if [[ $consent != yes ]]; then info 'Установка отменена.'; return 0; fi
         fi
     fi
