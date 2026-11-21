@@ -62,6 +62,7 @@ write_list() {
 # Override network and firewall operations. No host rules or installed binaries are used.
 uname() { printf '%s\n' x86_64; }
 security_ufw_active() { return 0; }
+security_ufw_set_boot() { [[ $1 == enabled ]]; }
 traffic_guard_verify() { cmp -s "$1/expected" "$TG_RUNNING_RULES"; }
 traffic_guard_download() {
     case "$1" in

@@ -30,6 +30,7 @@ ufw() {
 active() { printf 'no\n'; }
 enabled() { printf 'no\n'; }
 traffic_guard_capture_runtime() { :; }
+security_ufw_boot_state() { printf 'masked\n'; }
 ssh_context() { printf '192.0.2.1 10100 198.51.100.1 2202\n'; }
 disarm_rollback() { rm -f -- "$PENDING_FILE"; }
 
@@ -40,6 +41,7 @@ if capture_snapshot network; then exit 1; fi
 expected_ufw_state=active
 id=$(capture_snapshot network)
 [[ $(< "$BACKUP_DIR/$id/ufw.active") == yes ]]
+[[ $(< "$BACKUP_DIR/$id/ufw.boot") == masked ]]
 expected_ufw_state=inactive
 inactive_id=$(capture_snapshot network)
 [[ $(< "$BACKUP_DIR/$inactive_id/ufw.active") == no ]]

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-SNAPSHOT_CONFIG=("$CONFIG_DIR/node.json" "$CONFIG_DIR/host.json" "$NODE_SECRET")
+SNAPSHOT_CONFIG=("$CONFIG_DIR/node.json" "$CONFIG_DIR/host.json" "$CONFIG_DIR/vpn-port.json" "$NODE_SECRET")
 SNAPSHOT_NODE=("$NODE_DIR/compose.yaml" /etc/logrotate.d/remna-node-setup /etc/logrotate.d/remna-node-setup-node)
 SNAPSHOT_CADDY=(/etc/caddy/Caddyfile /var/www/remna-node-setup/index.html)
 SNAPSHOT_NGINX=(/etc/nginx/conf.d/remna-node-setup.conf
@@ -70,7 +70,7 @@ has_scope() {
 }
 
 capture_snapshot() {
-    local scope=$1 dir unit ufw_state origin
+    local scope=$1 dir unit ufw_state ufw_boot origin
     if has_scope "$scope" network; then
         ufw_state=$(security_ufw_state) || { fail 'Не удалось надёжно определить состояние UFW. Сеть не изменена.'; return 1; }
     fi
@@ -99,6 +99,9 @@ capture_snapshot() {
             printf 'yes\n' > "$dir/ufw.active"
         else
             printf 'no\n' > "$dir/ufw.active"
+        fi
+        if ufw_boot=$(security_ufw_boot_state); then
+            printf '%s\n' "$ufw_boot" > "$dir/ufw.boot" || return
         fi
         active fail2ban.service > "$dir/fail2ban.active" || return
         enabled fail2ban.service > "$dir/fail2ban.enabled" || return
@@ -210,6 +213,9 @@ restore_network() {
     for unit in "${TG_UNITS[@]}"; do
         if [[ $(< "$dir/$unit.enabled") == yes ]]; then systemctl enable "$unit" || errors=1; fi
     done
+    if [[ -r $dir/ufw.boot ]]; then
+        restore_step 'автозапуск UFW' security_ufw_set_boot "$(< "$dir/ufw.boot")" || errors=1
+    fi
     restore_step 'Fail2Ban' restore_service fail2ban.service "$(< "$dir/fail2ban.active")" "$(< "$dir/fail2ban.enabled")" || errors=1
     return "$errors"
 }

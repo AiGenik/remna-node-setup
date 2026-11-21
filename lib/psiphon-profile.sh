@@ -39,3 +39,43 @@ psiphon_profile() {
         }
     '
 }
+
+psiphon_profile_merge() {
+    local fragment
+    fragment=$(psiphon_profile "${1-}") || return
+    jq -e --argjson fragment "$fragment" '
+        def matching($new):
+            .ruleTag == $new.ruleTag or
+            (.outboundTag == $new.outboundTag and .network == $new.network and
+             ((.domain // []) | any(test("gemini|generativelanguage"; "i"))));
+
+        if type != "object" or (.outbounds | type) != "array" or
+            ((.routing.rules // []) | type) != "array"
+        then error("Передайте JSON профиля Remnawave с массивом outbounds.") else . end
+        | reduce $fragment.outbounds[] as $new (.;
+            ([.outbounds[] | select(.tag == $new.tag)]) as $found
+            | if ($found | length) == 0 then .outbounds += [$new]
+              elif $found != [$new] and (
+                ($found | length) > 1 or $found[0].protocol != $new.protocol or
+                ($new.protocol == "socks" and
+                 ($found[0].settings.address != $new.settings.address or $found[0].settings.port != $new.settings.port))
+              ) then error("Конфликт outbound " + $new.tag + ". Проверьте общий профиль.")
+              else . end
+          )
+        | .routing.rules = reduce ($fragment.routing.rules | reverse[]) as $new ((.routing.rules // []);
+            ([.[] | select(matching($new))] | length) as $count
+            | if $count == 0 then [$new] + .
+              elif $count > 1 then error("В профиле несколько правил " + $new.ruleTag + ".")
+              else map(if matching($new) then
+                if .outboundTag != $new.outboundTag or .network != $new.network or
+                   ($new.network == "udp" and (.port | tostring) != ($new.port | tostring))
+                    then error("Конфликт правила " + $new.ruleTag + ".")
+                elif has("localIP") then
+                    if (.localIP | type) != "array" then error("Ожидался массив localIP.")
+                    else .localIP |= reduce $new.localIP[] as $ip (.; if index($ip) then . else . + [$ip] end)
+                    end
+                else . end
+              else . end) end
+          )
+    '
+}

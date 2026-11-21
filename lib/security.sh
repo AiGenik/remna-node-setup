@@ -14,6 +14,70 @@ security_ufw_active() {
     [[ $(security_ufw_state) == active ]]
 }
 
+security_ufw_boot_state() {
+    local state
+    state=$(systemctl is-enabled ufw.service 2>/dev/null) || :
+    case $state in
+        enabled|enabled-runtime|disabled|masked|masked-runtime) printf '%s\n' "$state" ;;
+        *) return 1 ;;
+    esac
+}
+
+security_ufw_set_boot() {
+    local desired=$1 current
+    case $desired in
+        enabled|enabled-runtime|disabled|masked|masked-runtime) ;;
+        *) return 1 ;;
+    esac
+    current=$(security_ufw_boot_state) || { fail 'Не удалось определить автозапуск ufw.service.'; return 1; }
+    if [[ $current == "$desired" ]]; then return 0; fi
+    case $current in
+        masked) systemctl unmask ufw.service || return ;;
+        masked-runtime) systemctl --runtime unmask ufw.service || return ;;
+        enabled-runtime) systemctl --runtime disable ufw.service || return ;;
+        enabled) systemctl disable ufw.service || return ;;
+    esac
+    case $desired in
+        enabled) systemctl enable ufw.service || return ;;
+        enabled-runtime) systemctl --runtime enable ufw.service || return ;;
+        masked) systemctl mask ufw.service || return ;;
+        masked-runtime) systemctl --runtime mask ufw.service || return ;;
+        disabled) ;;
+    esac
+    [[ $(security_ufw_boot_state) == "$desired" ]]
+}
+
+security_ufw_boot_verified() {
+    local state
+    state=$(security_ufw_boot_state) || state=неизвестен
+    if [[ $state != enabled ]]; then
+        warn "UFW не восстановит правила штатно после запуска · $state. Откройте «Восстановить автозапуск защиты»."
+        return 1
+    fi
+}
+
+security_repair_boot() {
+    local unit
+    security_ufw_set_boot enabled || return
+    if [[ -s $STATE_DIR/traffic-guard/version ]]; then
+        for unit in antiscan-ipset-restore.service antiscan-move-rules.service; do
+            systemctl enable "$unit" || return
+        done
+        traffic_guard_firewall_active || { fail 'Действующие правила TrafficGuard не подтверждены.'; return 1; }
+    fi
+    if fail2ban-client status sshd >/dev/null 2>&1; then
+        systemctl enable fail2ban.service || return
+    fi
+    info 'Автозапуск защиты восстановлен.'
+}
+
+security_ufw_public_rule() {
+    local entry=$1 rules=$2 port protocol
+    port=${entry%/*}
+    protocol=${entry#*/}
+    grep -Eq "^$port(/$protocol)?( \(v6\))?[[:space:]]+(ALLOW|LIMIT)( IN)?[[:space:]]+Anywhere([[:space:]]|$)" <<< "$rules"
+}
+
 security_configured_vpn_ports() {
     if [[ ${VPN_PORTS+x} ]]; then
         printf '%s\n' "$VPN_PORTS"
@@ -179,7 +243,7 @@ security_remove_managed_ufw_rules() {
 
 security_external_ufw_rules() {
     local rules rule
-    local managed_rule=" comment 'remna-node-setup:(ssh|panel|node|vpn|acme)'$"
+    local managed_rule=" comment 'remna-node-setup:(ssh|panel|node|vpn|vpn-closed|acme)'$"
     rules=$(LC_ALL=C ufw show added) || return 1
     while IFS= read -r rule; do
         if [[ $rule == 'ufw '* && ! $rule =~ $managed_rule ]]; then
@@ -306,6 +370,7 @@ security_apply() {
 
     if [[ $ufw_state == inactive ]]; then ufw --force enable || return 1; fi
     security_ufw_active || { fail "UFW не активировался."; return 1; }
+    security_ufw_set_boot enabled || return
     if [[ $guard_was_active == yes ]] &&
        { [[ $change_default == yes ]] || ! traffic_guard_firewall_active; }; then
         if ! systemctl restart antiscan-move-rules.service || ! traffic_guard_firewall_active; then
@@ -336,7 +401,7 @@ security_apply_current() {
 }
 
 security_vpn_status() {
-    local detected configured rules result=0 entry port protocol
+    local detected configured rules result=0 entry
     local -a entries=()
     configured=$(security_configured_vpn_ports) || return 1
     detected=$(security_detect_vpn_ports) || return 1
@@ -350,9 +415,7 @@ security_vpn_status() {
         rules=$(LC_ALL=C ufw status) || return 1
         read -r -a entries <<< "$detected"
         for entry in "${entries[@]}"; do
-            port=${entry%/*}
-            protocol=${entry#*/}
-            if ! grep -Eq "^$port(/$protocol)?( \(v6\))?[[:space:]]+(ALLOW|LIMIT) IN[[:space:]]+Anywhere([[:space:]]|$)" <<< "$rules"; then
+            if ! security_ufw_public_rule "$entry" "$rules"; then
                 warn "Для $entry не найдено отдельное публичное разрешение UFW. Проверьте «Порты и защита»."
                 result=1
             fi
@@ -375,6 +438,7 @@ security_ufw_managed() {
 security_status() {
     if security_ufw_active; then
         info "UFW включён"
+        security_ufw_boot_verified || :
     else
         warn "UFW выключен или недоступен"
     fi
@@ -440,8 +504,12 @@ bbr_apply() {
 }
 
 bbr_status() {
-    local congestion qdisc
+    local congestion qdisc device current
     congestion=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null) || congestion='недоступно'
     qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null) || qdisc='недоступно'
     info "Алгоритм TCP — $congestion, очередь по умолчанию — $qdisc"
+    device=$(ip -o -4 route show default 2>/dev/null | awk 'NR == 1 {for (i=1; i<NF; i++) if ($i == "dev") print $(i+1)}') || return 0
+    [[ -n $device ]] || return 0
+    current=$(tc qdisc show dev "$device" 2>/dev/null | awk '$4 == "root" {print $2}') || return 0
+    if [[ -n $current ]]; then info "Текущая очередь $device — $current"; fi
 }

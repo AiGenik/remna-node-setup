@@ -213,6 +213,7 @@ traffic_guard_apply() (
         fi
     fi
 
+    security_ufw_set_boot enabled || return
     if [[ -z $work_dir ]]; then
         work_dir=$(mktemp -d "$STATE_DIR/.traffic-guard.XXXXXX") || return 1
         # shellcheck disable=SC2064
@@ -258,6 +259,11 @@ traffic_guard_status() {
             if [[ $commit =~ ^[a-f0-9]{40}$ ]]; then suffix=" · база ${commit:0:12}"; fi
         fi
         info "TrafficGuard $(< "$version_file") включён$suffix."
+        if ! systemctl is-enabled --quiet antiscan-ipset-restore.service ||
+            ! systemctl is-enabled --quiet antiscan-move-rules.service; then
+            warn 'Автозапуск TrafficGuard не подтверждён. Откройте «Восстановить автозапуск защиты».'
+            if [[ ${1-} == required ]]; then return 1; fi
+        fi
     else
         warn "TrafficGuard $(< "$version_file") установлен. Правила неактивны."
         if [[ ${1-} == required ]]; then return 1; fi

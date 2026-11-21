@@ -10,6 +10,7 @@ shellcheck -x "${shell_files[@]}"
 ./tests/selfsteal-settings.sh
 ./tests/standalone-settings.sh
 bash tests/apt-packages.sh
+bash tests/vpn-port-migration.sh
 python3 tests/dns-settings.py
 python3 tests/ui-smoke.py
 ./tests/release-smoke.sh

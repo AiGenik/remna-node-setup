@@ -430,6 +430,16 @@ configure_bbr() {
     run_change 'config bbr' apply_bbr
 }
 
+repair_security_boot() {
+    local consent
+    security_ufw_active || { fail 'Сначала включите UFW в «Входящие порты и защита SSH».'; return 1; }
+    if [[ ${UI_INTERACTIVE:-no} == yes ]]; then
+        consent=$(yes_no '  Восстановить автозапуск защитных служб?' n) || return
+        [[ $consent == yes ]] || return 0
+    fi
+    run_change network security_repair_boot
+}
+
 apply_traffic_guard() {
     save_config && ui_run 'Применение базы TrafficGuard' traffic_guard_apply "$1"
 }
@@ -635,6 +645,7 @@ doctor() {
     fi
     if [[ $ENABLE_SECURITY == yes ]]; then
         if ! security_ufw_active; then warn 'UFW неактивен.'; result=1; fi
+        if ! security_ufw_boot_verified; then result=1; fi
         if ! fail2ban-client status sshd >/dev/null 2>&1; then warn 'Fail2Ban для SSH недоступен.'; result=1; fi
     fi
     if [[ $ENABLE_TRAFFIC_GUARD == yes ]]; then traffic_guard_status required || result=1; fi
@@ -664,6 +675,13 @@ dispatch() (
         doctor) [[ $# == 1 ]] || return 2; doctor; return ;;
         dns) [[ $# -le 2 ]] || return 2; check_dns "$target"; return ;;
         logs) [[ $# == 1 ]] || return 2; node_logs; return ;;
+        vpn-port)
+            if [[ $target == profile ]]; then
+                [[ $# == 4 ]] || return 2
+                vpn_port_profile "$3" "$4"
+                return
+            fi
+            ;;
         auto-updates)
             if [[ $# == 2 && $target == status ]]; then auto_update_status; return; fi
             ;;
@@ -671,6 +689,7 @@ dispatch() (
             case "$target" in
                 status) [[ $# == 2 ]] || return 2; psiphon_status; return ;;
                 profile) [[ $# -le 3 ]] || return 2; psiphon_profile "${3-}"; return ;;
+                profile-merge) [[ $# -le 3 ]] || return 2; psiphon_profile_merge "${3-}"; return ;;
             esac
             ;;
     esac
@@ -694,8 +713,19 @@ dispatch() (
             if [[ -e $CONFIG_DIR/node.json ]]; then add_selfsteal "$target"; else standalone_selfsteal "$target"; fi
             ;;
         security)
+            if [[ $# == 2 && $target == boot ]]; then repair_security_boot; return; fi
             [[ $# == 1 ]] || return 2
             if [[ -e $CONFIG_DIR/node.json ]]; then configure_security; else standalone_security; fi
+            ;;
+        vpn-port)
+            case $target in
+                '') [[ $# == 1 && ${UI_INTERACTIVE:-no} == yes ]] || return 2; vpn_port_wizard ;;
+                prepare) [[ $# == 4 ]] || return 2; vpn_port_prepare "$3" "$4" ;;
+                finish) [[ $# == 3 && $3 =~ ^(keep|close)$ ]] || return 2; vpn_port_finish "$3" ;;
+                cancel) [[ $# == 2 ]] || return 2; vpn_port_cancel ;;
+                close) [[ $# == 3 ]] || return 2; vpn_port_close "$3" ;;
+                *) return 2 ;;
+            esac
             ;;
         bbr)
             [[ $# == 1 ]] || return 2

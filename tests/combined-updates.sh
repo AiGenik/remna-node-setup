@@ -93,4 +93,11 @@ psiphon_profile '192.0.2.8' | jq -e '
 psiphon_profile '2001:db8::8' |
     jq -e 'all(.routing.rules[]; .localIP == ["2001:db8::8/128"])' >/dev/null
 if psiphon_profile '192.0.2.8 192.0.2.9' >/dev/null 2>&1; then exit 1; fi
+original=$(psiphon_profile '192.0.2.8' | jq '.routing.rules += [{outboundTag:"direct"}]')
+merged=$(psiphon_profile_merge '192.0.2.9' <<< "$original")
+jq -e '(.outbounds | length) == 2 and .routing.rules[2].outboundTag == "direct" and
+    all(.routing.rules[:2][]; .localIP == ["192.0.2.8/32","192.0.2.9/32"])' <<< "$merged" >/dev/null
+[[ $(psiphon_profile_merge '192.0.2.9' <<< "$merged") == "$merged" ]]
+bad=$(jq '.outbounds[0].settings.port = 1081' <<< "$original")
+if psiphon_profile_merge '192.0.2.9' <<< "$bad" >/dev/null 2>&1; then exit 1; fi
 printf '%s\n' 'Проверены одно обновление сети, автоматический режим и шаблон Gemini.'

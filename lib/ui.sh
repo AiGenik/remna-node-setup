@@ -266,6 +266,8 @@ MENU_ACTIONS=(
     'components|4|TrafficGuard против сканеров|update traffic-guard'
     'components|5|Gemini · Настроить Psiphon|psiphon'
     'components|6|Gemini · Шаблон для Remnawave|psiphon profile'
+    'components|7|Сменить порт VPN|vpn-port'
+    'components|8|Восстановить автозапуск защиты|security boot'
     'diagnostics|1|Статус ноды и компонентов|status'
     'diagnostics|2|Проверка портов и сервисов|doctor'
     'diagnostics|3|Логи ноды|logs'

@@ -24,6 +24,7 @@ MOCK_UFW_EFFECTIVE=
 MOCK_UPDATES_STATE=1
 MOCK_APT_UPGRADE_TIMER=yes
 MOCK_TRAFFIC_GUARD=no
+MOCK_UFW_BOOT=enabled
 
 ss() {
     cat <<'SOCKETS'
@@ -69,8 +70,15 @@ ufw() {
 traffic_guard_firewall_active() { [[ $MOCK_TRAFFIC_GUARD == yes ]]; }
 systemctl() {
     printf '%s\n' "$*" >> "$log"
-    [[ $* == 'restart antiscan-move-rules.service' ]] || return 1
-    MOCK_TRAFFIC_GUARD=yes
+    case "$*" in
+        'is-enabled ufw.service') printf '%s\n' "$MOCK_UFW_BOOT" ;;
+        'unmask ufw.service') MOCK_UFW_BOOT=disabled ;;
+        'enable ufw.service') MOCK_UFW_BOOT=enabled ;;
+        'disable ufw.service') MOCK_UFW_BOOT=disabled ;;
+        'mask ufw.service') MOCK_UFW_BOOT=masked ;;
+        'restart antiscan-move-rules.service') MOCK_TRAFFIC_GUARD=yes ;;
+        *) return 1 ;;
+    esac
 }
 
 unattended-upgrade() { return 1; }
@@ -127,11 +135,18 @@ grep -Fqx 'default deny incoming' "$log"
 grep -Fqx 'restart antiscan-move-rules.service' "$log"
 [[ $MOCK_TRAFFIC_GUARD == yes ]]
 
-MOCK_UFW_EFFECTIVE=$'9443/tcp (v6) ALLOW IN Anywhere (v6)\n2443/udp ALLOW IN Anywhere'
+MOCK_UFW_EFFECTIVE=$'9443/tcp ALLOW Anywhere\n2443/udp ALLOW IN Anywhere'
 security_vpn_status
-MOCK_UFW_EFFECTIVE='2443/udp ALLOW IN Anywhere'
+MOCK_UFW_EFFECTIVE=$'9443/tcp ALLOW OUT Anywhere\n2443/udp ALLOW IN Anywhere'
 if security_vpn_status > "$log" 2>&1; then exit 1; fi
 grep -Fq 'Для 9443/tcp не найдено' "$log"
+MOCK_UFW_BOOT=masked
+if security_ufw_boot_verified >/dev/null 2>&1; then exit 1; fi
+security_ufw_set_boot enabled
+[[ $MOCK_UFW_BOOT == enabled ]]
+security_ufw_set_boot masked
+[[ $MOCK_UFW_BOOT == masked ]]
+MOCK_UFW_BOOT=enabled
 
 MOCK_UFW_STATE=inactive
 MOCK_UFW_STORED=$'ufw allow 443/tcp comment \'remna-node-setup:vpn\'\nufw allow from 2001:db8::3 to any port 3003 proto tcp comment \'remna-node-setup:panel\'\nufw allow 8443/tcp comment \'manual\''

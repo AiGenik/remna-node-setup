@@ -23,6 +23,8 @@ source "$PROJECT_DIR/lib/selfsteal.sh"
 source "$PROJECT_DIR/lib/selfsteal-nginx.sh"
 # shellcheck source=lib/security.sh
 source "$PROJECT_DIR/lib/security.sh"
+# shellcheck source=lib/vpn-port.sh
+source "$PROJECT_DIR/lib/vpn-port.sh"
 # shellcheck source=lib/traffic-guard.sh
 source "$PROJECT_DIR/lib/traffic-guard.sh"
 # shellcheck source=lib/transaction.sh
@@ -55,6 +57,9 @@ Remna Node Setup
   remna-node-setup install node-only  Установить только Docker и ноду
   remna-node-setup selfsteal [caddy|nginx] Настроить веб-сервер для self-steal
   remna-node-setup security           Настроить входящие порты, UFW и Fail2Ban
+  remna-node-setup security boot      Восстановить автозапуск UFW и TrafficGuard
+  remna-node-setup vpn-port           Перенести VPN на другой TCP-порт
+  remna-node-setup vpn-port profile СТАРЫЙ НОВЫЙ  Заменить порт в JSON из stdin
   remna-node-setup bbr                 Включить BBR и fq
   remna-node-setup status              Статус
   remna-node-setup doctor              Диагностика
@@ -72,6 +77,7 @@ Remna Node Setup
   remna-node-setup psiphon               Настроить локальный выход Psiphon
   remna-node-setup psiphon status        Проверить Psiphon
   remna-node-setup psiphon profile [IP]  Сформировать шаблон Gemini для Remnawave
+  remna-node-setup psiphon profile-merge [IP]  Добавить ноду в JSON профиля из stdin
   remna-node-setup update psiphon        Обновить управляемый Psiphon
   remna-node-setup rollback tool        Вернуть предыдущую версию скрипта
   remna-node-setup rollback            Отменить ожидающее подтверждения изменение
@@ -89,7 +95,8 @@ self_test() {
         release_update release_rollback release_acquire_lock install_wizard restore_snapshot \
         load_host_settings standalone_selfsteal standalone_security standalone_bbr standalone_traffic_guard \
         auto_update_enabled psiphon_configure psiphon_is_managed psiphon_select_settings \
-        psiphon_apply_settings psiphon_profile psiphon_outbound update_all standalone_port_preflight; do
+        psiphon_apply_settings psiphon_profile psiphon_profile_merge psiphon_outbound \
+        vpn_port_wizard update_all standalone_port_preflight; do
         declare -F "$name" >/dev/null || { fail "Не загружен модуль $name."; return 1; }
     done
     [[ -r $PROJECT_DIR/lib/secret-input.py ]] || { fail 'Модуль ввода ключа отсутствует.'; return 1; }

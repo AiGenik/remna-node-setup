@@ -35,6 +35,7 @@ traffic_guard_prepare() { [[ -d $1 ]]; }
 traffic_guard_apply() { [[ -d $1 ]]; }
 traffic_guard_status() { :; }
 security_install_sshd_jail() { :; }
+security_ufw_set_boot() { [[ $1 == enabled ]]; }
 
 sysctl() {
     case "$2" in
