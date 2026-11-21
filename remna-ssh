@@ -2,35 +2,192 @@
 set -euo pipefail
 
 usage() {
-    printf '%s\n' 'Использование: remna-ssh [--port PORT] [user@]host' \
-        'Можно указать имя из ~/.ssh/config. На VPS нужна версия Remna Node Setup 1.0 или новее.'
+    printf '%s\n' 'Использование: remna-ssh [--port PORT] [--panel SSH_АЛИАС] [user@]host' \
+        'Можно указать имена из ~/.ssh/config.' \
+        '--panel запускает проверку с панели. Нужны Python 3.8+, SSH-ключ и версия скрипта 1.1 или новее.'
+}
+
+ssh_target() {
+    [[ -n $1 && $1 != -* && $1 != *[[:space:][:cntrl:]]* ]]
+}
+
+run_panel_menu() {
+    # SSH retains the terminal for input. Its output carries structured probe requests.
+    python3 -c "$(cat <<'PY'
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+
+panel, host, ticket, *command = sys.argv[1:]
+panel_client = '''from concurrent.futures import ThreadPoolExecutor
+import socket
+import ssl
+import sys
+
+host, token, tls_port, *ports = sys.argv[1:]
+ack = token.encode()
+body = ack * 128
+tls_status = b""
+if tls_port != "0":
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    try:
+        with socket.create_connection((host, int(tls_port)), timeout=4) as conn:
+            with context.wrap_socket(conn, server_hostname=host) as tls:
+                print(f"✓ {tls_port}/tcp · отвечает {tls.version()}", flush=True)
+        tls_status = b"+"
+    except (OSError, ValueError) as exc:
+        print(f"× {tls_port}/tcp · TLS: {exc}", flush=True)
+        tls_status = b"-"
+
+def check(port):
+    try:
+        with socket.create_connection((host, int(port)), timeout=4) as conn:
+            conn.sendall(body)
+            with conn.makefile("rb") as reply:
+                if reply.read(len(body)) != body:
+                    raise OSError("неполный ответ")
+                conn.sendall(ack + tls_status)
+                if reply.read(1) != b"+":
+                    raise OSError("нет подтверждения")
+        return True
+    except OSError as exc:
+        print(f"× {port}/tcp · {exc}", flush=True)
+        return False
+
+with ThreadPoolExecutor(max_workers=8) as pool:
+    passed = list(pool.map(check, ports))
+sys.exit(not all(passed) or tls_status == b"-")
+'''
+
+seen = set()
+
+
+def valid_port(value):
+    return type(value) is int and 1 <= value <= 65535
+
+
+def run_probe(frame):
+    try:
+        message = json.loads(frame)
+        if not isinstance(message, dict) or message.get("ticket") != ticket:
+            return
+        token, ports, tls = message["token"], message["ports"], message["tls"]
+        if not isinstance(token, str) or not re.fullmatch(r"[a-f0-9]{32}", token):
+            return
+        if not isinstance(ports, list) or len(ports) > 16 or not all(map(valid_port, ports)):
+            return
+        if (tls is not None and not valid_port(tls)) or not (ports or tls):
+            return
+        if token in seen:
+            return
+    except (ValueError, KeyError):
+        return
+    seen.add(token)
+    args = shlex.join([host, token, str(tls or 0), *map(str, ports)])
+    print(f"  Проверка с панели {panel}…", flush=True)
+    try:
+        result = subprocess.run(
+            ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=6",
+             "-o", "ControlPath=none", "-o", "ControlMaster=no", "-o", "ClearAllForwardings=yes", "-o", "ForwardAgent=no",
+             "-o", "RemoteCommand=none", panel, "python3 -I - " + args],
+            input=panel_client, text=True, timeout=24,
+        )
+        if result.returncode == 255:
+            print("  SSH-вход на панель не удался. Проверьте SSH-алиас и ключ.", flush=True)
+    except (OSError, subprocess.TimeoutExpired):
+        print("  Проверка с панели прервана. Проверьте SSH-подключение.", flush=True)
+
+
+def relay(stream):
+    frame = None
+    while chunk := os.read(stream.fileno(), 4096):
+        while chunk:
+            if frame is None:
+                output, marker, chunk = chunk.partition(b"\x1e")
+                sys.stdout.buffer.write(output)
+                sys.stdout.buffer.flush()
+                if marker:
+                    frame = bytearray()
+            else:
+                payload, marker, chunk = chunk.partition(b"\x1f")
+                if len(frame) + len(payload) <= 4096:
+                    frame.extend(payload)
+                else:
+                    frame = bytearray(b"invalid")
+                if marker:
+                    run_probe(frame)
+                    frame = None
+
+
+menu = subprocess.Popen(command, stdout=subprocess.PIPE)
+try:
+    relay(menu.stdout)
+    sys.exit(menu.wait())
+finally:
+    if menu.poll() is None:
+        menu.terminate()
+        menu.wait()
+PY
+)" "$@"
 }
 
 ssh_options=(-tt -o ControlMaster=no -o ControlPath=none -o ControlPersist=no
-    -o ClearAllForwardings=yes -o RemoteCommand=none -o ConnectTimeout=10)
-case ${1-} in
-    -h|--help) usage; exit ;;
-    -p|--port)
-        port=${2-}
-        if [[ ! $port =~ ^[1-9][0-9]{0,4}$ ]] || (( port > 65535 )); then usage >&2; exit 2; fi
-        ssh_options+=(-p "$port")
-        shift 2
-        ;;
-esac
-if [[ $# != 1 || -z $1 || $1 == -* || $1 == *[[:space:][:cntrl:]]* ]]; then usage >&2; exit 2; fi
+    -o ClearAllForwardings=yes -o ForwardAgent=no -o RemoteCommand=none -o ConnectTimeout=10)
+panel=
+while [[ ${1-} == -* ]]; do
+    case $1 in
+        -h|--help) usage; exit ;;
+        -p|--port)
+            port=${2-}
+            if [[ ! $port =~ ^[1-9][0-9]{0,4}$ ]] || (( port > 65535 )); then usage >&2; exit 2; fi
+            ssh_options+=(-p "$port")
+            ;;
+        --panel)
+            panel=${2-}
+            if ! ssh_target "$panel"; then usage >&2; exit 2; fi
+            ;;
+        *) usage >&2; exit 2 ;;
+    esac
+    shift 2
+done
+if [[ $# != 1 ]] || ! ssh_target "$1"; then usage >&2; exit 2; fi
 
 destination=$1
+probe_host=
+if [[ -n $panel ]]; then
+    if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 8))' >/dev/null 2>&1; then
+        printf '%s\n' 'Для --panel нужен Python 3.8 или новее.' >&2
+        exit 1
+    fi
+    probe_host=$(ssh -G "$destination" | awk '$1 == "hostname" {print tolower($2)}')
+    if [[ $probe_host == \[*\] ]]; then probe_host=${probe_host:1:${#probe_host}-2}; fi
+    probe_host=${probe_host%.}
+    if [[ ! $probe_host =~ ^[a-z0-9:][a-z0-9.:-]*$ ]]; then
+        printf '%s\n' 'Укажите IP или домен ноды в команде или SSH-конфиге.' >&2
+        exit 2
+    fi
+fi
 previous=
 while :; do
     ticket=$(LC_ALL=C od -An -N16 -tx1 /dev/urandom | tr -d '[:space:]')
     [[ $ticket =~ ^[a-f0-9]{32}$ ]] || exit 1
     args="__ssh-menu $ticket${previous:+ $previous}"
+    if [[ -n $panel ]]; then args="__ssh-menu $ticket ${previous:--} $probe_host"; fi
     tool=/usr/local/bin/remna-node-setup
     command="if [ \"\$(id -u)\" -eq 0 ]; then exec $tool $args; else exec sudo $tool $args; fi"
     result=0
-    # The launcher inserts only the fixed path and validated hexadecimal tickets.
-    # shellcheck disable=SC2029
-    ssh "${ssh_options[@]}" "$destination" "$command" || result=$?
+    if [[ -n $panel ]]; then
+        run_panel_menu "$panel" "$probe_host" "$ticket" ssh "${ssh_options[@]}" "$destination" "$command" || result=$?
+    else
+        # The launcher inserts only the fixed path and validated arguments.
+        # shellcheck disable=SC2029
+        ssh "${ssh_options[@]}" "$destination" "$command" || result=$?
+    fi
     case $result in
         0) exit 0 ;;
         42)
@@ -39,6 +196,9 @@ while :; do
             sleep 0.2
             ;;
         *)
+            if [[ -n $panel && $result == 2 ]]; then
+                printf '%s\n' 'Для --panel обновите Remna Node Setup на ноде до 1.1 или новее.' >&2
+            fi
             if [[ -n $previous ]]; then
                 printf '%s\n' 'SSH завершился с ошибкой. Для неподтверждённых изменений действует автооткат.' >&2
             fi

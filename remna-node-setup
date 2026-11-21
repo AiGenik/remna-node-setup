@@ -44,6 +44,7 @@ source "$PROJECT_DIR/lib/port-preflight.sh"
 
 # Only the SSH launcher and its controlled release handoff assign this ticket.
 SSH_MENU_TICKET=
+SSH_PANEL_PROBE_HOST=
 
 usage() {
     cat <<'HELP'
@@ -102,7 +103,7 @@ case "${1-}" in
     --help|-h|help) usage; exit ;;
     --version) version_get version; exit ;;
     --self-test) self_test; exit ;;
-    --supports-ssh-menu) exit 0 ;;
+    --supports-ssh-menu|--supports-panel-probe) exit 0 ;;
 esac
 
 ensure_host
@@ -117,12 +118,14 @@ fi
 ui_init
 case "${1-}" in
     __ssh-menu)
-        [[ ( $# == 2 || $# == 3 ) && $UI_INTERACTIVE == yes ]] && valid_ssh_ticket "$2" || exit 2
+        [[ $# -ge 2 && $# -le 4 && $UI_INTERACTIVE == yes ]] && valid_ssh_ticket "$2" || exit 2
         ssh_transport_start >/dev/null || { fail 'Откройте меню через remna-ssh с другого компьютера.'; exit 1; }
         SSH_MENU_TICKET=$2
         notice=
-        if [[ $# == 3 ]]; then
-            dispatch __ssh-confirm "$3"
+        if [[ $# == 4 ]]; then SSH_PANEL_PROBE_HOST=$(check_probe_destination "$4") || exit 2; fi
+        previous=${3-}
+        if [[ -n $previous && $previous != - ]]; then
+            dispatch __ssh-confirm "$previous"
             notice='Сеть подтверждена по SSH.'
         fi
         show_menu "$notice"

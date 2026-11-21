@@ -1,11 +1,13 @@
 import asyncio
 import ipaddress
+import json
 import secrets
 import shlex
 import sys
 
 
 SECONDS = 90
+LAUNCHER_SECONDS = 28
 TRANSFER_SECONDS = 5
 
 CLIENT = '''import socket
@@ -33,18 +35,26 @@ sys.exit(failed)
 '''
 
 
-async def probe(host, sources, ports, seconds=SECONDS):
+def request_panel(ticket, token, ports, tls_port):
+    request = {"ticket": ticket, "token": token, "ports": list(ports), "tls": tls_port}
+    print("\x1e" + json.dumps(request, separators=(",", ":")) + "\x1f", flush=True)
+
+
+async def probe(host, sources, ports, seconds=SECONDS, *, ticket=None, tls_port=None):
     token = secrets.token_hex(16)
     ack = token.encode()
+    verify_tls = ticket is not None and tls_port is not None
     payload = ack * 128
     servers = {}
     connected = set()
     received = set()
     passed = set()
+    tls_ok = False
     done = asyncio.Event()
     bind_addresses = sorted({"::" if ip.version == 6 else "0.0.0.0" for ip in sources})
 
     async def exchange(reader, writer, port):
+        nonlocal tls_ok
         try:
             remote = ipaddress.ip_address(writer.get_extra_info("peername")[0])
             if isinstance(remote, ipaddress.IPv6Address) and remote.ipv4_mapped:
@@ -60,6 +70,11 @@ async def probe(host, sources, ports, seconds=SECONDS):
                 await writer.drain()
                 if await reader.readexactly(len(ack)) != ack:
                     return
+                if verify_tls:
+                    status = await reader.readexactly(1)
+                    if status not in (b"+", b"-"):
+                        return
+                    tls_ok = tls_ok or status == b"+"
                 writer.write(b"+")
                 await writer.drain()
             if port not in passed:
@@ -87,10 +102,13 @@ async def probe(host, sources, ports, seconds=SECONDS):
                 print(f"× {port}/tcp · не удалось запустить тест: {exc.strerror}", flush=True)
             else:
                 servers[port] = listeners
-        if servers:
+        if ticket is not None and (servers or tls_port is not None):
+            request_panel(ticket, token, servers, tls_port)
+        elif servers:
             args = shlex.join([host, token, *map(str, servers)])
             print(f"\nВыполните на сервере панели в течение {seconds} с (Ctrl+C — отмена):\n")
             print(f"python3 - {args} <<'REMNA_PROBE'\n{CLIENT}REMNA_PROBE", flush=True)
+        if servers:
             try:
                 await asyncio.wait_for(done.wait(), seconds)
             except TimeoutError:
@@ -110,14 +128,22 @@ async def probe(host, sources, ports, seconds=SECONDS):
         for server in bound:
             server.close()
         await asyncio.gather(*(server.wait_closed() for server in bound))
-    return passed == set(ports)
+    return passed == set(ports) and (not verify_tls or not servers or tls_ok)
 
 
 if __name__ == "__main__":
-    destination, addresses, *numbers = sys.argv[1:]
+    arguments = sys.argv[1:]
+    ticket = tls_port = None
+    seconds = SECONDS
+    if arguments[:1] == ["--launcher"]:
+        _, ticket, tls, *arguments = arguments
+        tls_port = int(tls) or None
+        seconds = LAUNCHER_SECONDS
+    destination, addresses, *numbers = arguments
     allowed = {ipaddress.ip_address(ip) for ip in addresses.split()}
     try:
-        sys.exit(not asyncio.run(probe(destination, allowed, list(map(int, numbers)))))
+        sys.exit(not asyncio.run(probe(destination, allowed, list(map(int, numbers)), seconds,
+                                      ticket=ticket, tls_port=tls_port)))
     except KeyboardInterrupt:
         print("\nПроверка отменена.")
         sys.exit(1)

@@ -62,9 +62,32 @@ port_preflight() {
         return 0
     fi
 
-    info '  Тест проверит свободные TCP-порты. Понадобится терминал панели.'
+    if [[ -n ${SSH_PANEL_PROBE_HOST:-} ]]; then
+        info "  Тест автоматически запустится с панели для $SSH_PANEL_PROBE_HOST."
+    else
+        info '  Для внешнего теста понадобится терминал панели.'
+    fi
     active=$(yes_no '  Запустить проверку с панели?' y) || return
     if [[ $active != yes ]]; then info '  Внешний обмен не проверялся.'; return 0; fi
+    if [[ -n ${SSH_PANEL_PROBE_HOST:-} ]]; then
+        local tls=0
+        if (( ${#probe_ports[@]} > 16 )); then
+            fail 'Автоматическая проверка принимает до 16 свободных TCP-портов за раз.'
+            return 1
+        fi
+        if [[ $running_node == yes ]]; then tls=$node_port; fi
+        if (( ${#probe_ports[@]} > 0 )); then
+            if [[ -z $source_ips ]]; then source_ips=$(ask_panel_ips '') || return; fi
+            source_ips=$(check_panel_ips "$source_ips") || return
+        fi
+        if ! python3 "$PROJECT_DIR/lib/port-probe.py" --launcher "$SSH_MENU_TICKET" "$tls" \
+            "$SSH_PANEL_PROBE_HOST" "$source_ips" "${probe_ports[@]}"; then
+            ui_attention 'Проверка с панели не прошла. Смотрите результат по портам.'
+            return 1
+        fi
+        if [[ $mode == install ]]; then ui_pause 'продолжить'; fi
+        return
+    fi
     if [[ -z $destination ]]; then
         destination=$(python3 "$PROJECT_DIR/lib/selfsteal-dns.py" --public-ips 2>/dev/null) || destination=
         destination=${destination%%,*}

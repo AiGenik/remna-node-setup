@@ -285,6 +285,13 @@ MENU_ACTIONS=(
 )
 
 ui_restart_menu() {
+    if [[ -n ${SSH_PANEL_PROBE_HOST:-} ]]; then
+        if "$RELEASE_COMMAND" --supports-panel-probe >/dev/null 2>&1; then
+            exec "$RELEASE_COMMAND" __ssh-menu "$SSH_MENU_TICKET" - "$SSH_PANEL_PROBE_HOST"
+        fi
+        info 'Для автоматической проверки с панели нужен Remna Node Setup 1.1 или новее.'
+        return 0
+    fi
     if [[ -n ${SSH_MENU_TICKET:-} ]]; then
         if "$RELEASE_COMMAND" --supports-ssh-menu >/dev/null 2>&1; then
             exec "$RELEASE_COMMAND" __ssh-menu "$SSH_MENU_TICKET"
