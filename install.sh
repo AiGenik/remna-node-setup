@@ -133,7 +133,7 @@ release_install_client() (
         release_error "Каталог $directory/remna-ssh занимает место файла помощника."
         return 1
     fi
-    chmod 0755 -- "$stage/remna-ssh" || return 1
+    chmod 0755 "$stage/remna-ssh" || return 1
     mv -f -- "$stage/remna-ssh" "$directory/remna-ssh" || return 1
     printf 'Помощник установлен. Команда запуска: %s\n' "$directory/remna-ssh"
 )
