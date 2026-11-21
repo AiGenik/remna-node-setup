@@ -61,11 +61,11 @@ run_change() {
     shift
     [[ $NODE_PORT == 3333 && $NEW_NODE_SECRET == "$TEST_KEY" ]] || return 1
     if [[ $EXPECTED_MODE == full ]]; then
-        [[ $NODE_DOMAIN == node.example.com && $SSH_PORT == 2202 &&
+        [[ $NODE_DOMAIN == "${EXPECTED_DOMAIN:-}" && $SSH_PORT == 2202 &&
            $PANEL_IPS == 192.0.2.25 && $SELFSTEAL_SERVER == "$EXPECTED_WEBSERVER" &&
            $VPN_PORTS == '9443/tcp 2443/udp' && $scope == 'config node network'* ]] || return 1
     else
-        [[ $NODE_DOMAIN == 192.0.2.10 && $ENABLE_SECURITY == no && -z $PANEL_IPS &&
+        [[ -z $NODE_DOMAIN && $ENABLE_SECURITY == no && -z $PANEL_IPS &&
            -z $SSH_PORT && $scope == 'config node' ]] || return 1
     fi
     "$@" || return 1
@@ -113,6 +113,7 @@ class Terminal:
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", self.rows, self.columns, 0, 0))
         self.output = b""
         env = {**ENV, "EXPECTED_WEBSERVER": "nginx", "EXPECTED_MODE": self.mode,
+               "EXPECTED_DOMAIN": "node.example.com" if self.mode == "full" else "",
                "FAIL_IMAGE": "yes" if self.fail_image else "no",
                "TEST_PENDING": "yes" if self.pending else "no"}
         if self.no_color:
@@ -183,12 +184,9 @@ with Terminal() as terminal:
     terminal.enter("0")
     terminal.expect("Номер пункта →")
     terminal.enter("2")
-    assert CLEAR in terminal.expect("Адрес ноды →")
-    terminal.enter("https://node.example.com")
-    assert "Введите домен или публичный IP".encode() in terminal.expect("Адрес ноды →")
-    terminal.enter("node.example.com")
     screen = terminal.expect("NODE_PORT из панели →")
-    assert "из Compose".encode() in screen
+    assert CLEAR in screen and "из Compose".encode() in screen
+    assert "Адрес ноды →".encode() not in screen and "Домен self-steal →".encode() not in screen
     terminal.enter("  - NODE_PORT='3333'")
     terminal.expect("SECRET_KEY из панели →")
     terminal.wait_for_hidden_input()
@@ -204,6 +202,10 @@ with Terminal() as terminal:
     terminal.enter()
     terminal.expect("Self-steal для REALITY? [Y/n]")
     terminal.enter()
+    terminal.expect("Домен self-steal →")
+    terminal.enter("https://node.example.com")
+    assert "Введите поддомен".encode() in terminal.expect("Домен self-steal →")
+    terminal.enter("node.example.com")
     terminal.expect("Веб-сервер → [1]")
     terminal.enter("2")
     terminal.expect("Включить BBR? [Y/n]")
@@ -243,7 +245,7 @@ with Terminal() as terminal:
     terminal.enter("0")
     assert terminal.process.wait(timeout=5) == 0
 
-base_inputs = ["node.example.com", "NODE_PORT=3333", TEST_KEY, "n", "n", "n"]
+base_inputs = ["NODE_PORT=3333", TEST_KEY, "n", "n", "n"]
 network_inputs = ["", "192.0.2.25", "9443/tcp 2443/udp", "y", ""]
 plain = subprocess.run(
     ["bash", "-c", FIXTURE, "ui-test", "install_wizard"],
@@ -253,6 +255,7 @@ plain = subprocess.run(
 assert "TEST-APPLIED" in plain.stdout
 assert "[1/4] Docker и образ ноды" in plain.stdout and "[4/4] Контейнер Remnawave" in plain.stdout
 assert "TEST-PSIPHON" not in plain.stdout
+assert "Домен self-steal →" not in plain.stderr and "Адрес ноды →" not in plain.stderr
 assert "\x1b" not in plain.stdout + plain.stderr
 assert TEST_KEY not in plain.stdout + plain.stderr
 
@@ -270,9 +273,8 @@ assert "Сеть ждёт подтверждения SSH" in psiphon_failed.stdo
 def accept_minimal_install(terminal):
     assert "Только нода".encode() in terminal.expect("Номер пункта →")
     terminal.enter("1")
-    terminal.expect("Адрес ноды →")
-    terminal.enter("192.0.2.10")
-    terminal.expect("NODE_PORT из панели →")
+    screen = terminal.expect("NODE_PORT из панели →")
+    assert "Адрес ноды →".encode() not in screen
     terminal.enter("3333")
     terminal.expect("SECRET_KEY из панели →")
     terminal.wait_for_hidden_input()

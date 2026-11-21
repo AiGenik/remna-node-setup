@@ -12,6 +12,7 @@ dns = runpy.run_path(str(Path(__file__).resolve().parents[1] / "lib/selfsteal-dn
 local_ip = "93.184.216.34"
 interfaces = [{"addr_info": [
     {"scope": "global", "local": local_ip},
+    {"scope": "global", "local": "172.17.0.1"},
     {},
     {"scope": "link", "local": "fe80::1"},
 ]}]
@@ -41,4 +42,6 @@ assert "DNS не находит" in missing and local_ip in missing
 mismatch = run([record(local_ip), record("2001:4860:4860::8888")])
 assert local_ip in mismatch and "2001:4860:4860::8888" in mismatch and "DNS only" in mismatch
 assert "DNS-сервер VPS" in run(error=socket.gaierror(socket.EAI_AGAIN, "retry"))
+with patch.object(subprocess, "check_output", return_value=json.dumps(interfaces).encode()):
+    assert dns["addresses_text"](dns["public_addresses"]()) == local_ip
 print("Проверены A/AAAA, NXDOMAIN, временный сбой резолвера и вывод iproute2.")

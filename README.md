@@ -10,7 +10,7 @@
 f=$(mktemp) && curl -q -fsSLo "$f" --proto =https https://raw.githubusercontent.com/AiGenik/remna-node-setup/HEAD/install.sh && sudo bash "$f" && rm -f "$f"
 ```
 
-В панели откройте «Ноды → Управление → +». Приготовьте адрес VPS, Node Port и Secret Key.
+В панели откройте «Ноды → Управление → +» и укажите адрес VPS. В мастере понадобятся Node Port и Secret Key. Для self-steal также укажите домен.
 
 - **Только нода** — Docker и Remnawave Node.
 - **Нода и компоненты** — нода и защита, с выбором self-steal, BBR, TrafficGuard и Gemini через Psiphon.

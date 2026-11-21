@@ -80,18 +80,6 @@ check_node_domain() {
     printf '%s\n' "$domain"
 }
 
-check_node_address() {
-    local address=${1,,} ip
-    address=${address%.}
-    if valid_domain "$address"; then
-        printf '%s\n' "$address"
-    elif ip=$(normalize_ips "$address" 2>/dev/null) && [[ -n $ip && $ip != *' '* ]]; then
-        printf '%s\n' "$ip"
-    else
-        fail 'Введите домен или публичный IP этого VPS.'
-    fi
-}
-
 check_node_port() {
     local port
     port=$(compose_value "$1" NODE_PORT) || return
@@ -203,7 +191,7 @@ wizard_selfsteal_preflight() {
 install_wizard() {
     local mode=${1:-full} scope='config node' consent detected_port result=0
     local steps=3 components='Docker, Remnawave Node'
-    local old_address='' old_port='' had_selfsteal=no has_node=no image
+    local old_port='' had_selfsteal=no has_node=no image vps_ips selfsteal_domain=''
     local gemini=no gemini_default=n PSIPHON_REGION PSIPHON_PORT
     # shellcheck disable=SC2034 # The progress renderer reads the current wizard title.
     local UI_INSTALL_TITLE='Установка ноды'
@@ -225,17 +213,12 @@ install_wizard() {
     else
         _standalone_load || return
     fi
-    old_address=$NODE_DOMAIN
     had_selfsteal=$ENABLE_SELFSTEAL
 
-    ui_step 1 'Адрес и служебный порт' "$steps"
+    ui_step 1 'Служебный порт' "$steps"
     info '  В панели → Ноды → Управление → +'
-    info '  Введите тот же адрес, что и в панели.'
-    NODE_DOMAIN=$(wizard_input 'Адрес ноды' "$old_address" check_node_address) || return
-    if [[ $mode == node-only && $had_selfsteal == yes && $NODE_DOMAIN != "$old_address" ]]; then
-        fail "Для HTTPS используется $old_address. Чтобы сменить адрес, откройте «Нода и компоненты»."
-        return 1
-    fi
+    vps_ips=$(python3 "$PROJECT_DIR/lib/selfsteal-dns.py" --public-ips 2>/dev/null) || vps_ips=
+    if [[ -n $vps_ips ]]; then info "  IP VPS для карточки ноды · $vps_ips"; fi
     info '  Скопируйте Node Port из Compose.'
     NODE_PORT=$(wizard_input 'NODE_PORT из панели' "${old_port:-2222}" check_node_port) || return
     if [[ $mode == node-only && $ENABLE_SECURITY == yes && $has_node == yes && $NODE_PORT != "$old_port" ]]; then
@@ -253,10 +236,9 @@ install_wizard() {
             ENABLE_SELFSTEAL=$(yes_no '  Self-steal для REALITY?' y) || return
         fi
         if [[ $ENABLE_SELFSTEAL == yes ]]; then
-            if ! valid_domain "$NODE_DOMAIN"; then
-                info '  Для сертификата нужен домен, указывающий на этот VPS.'
-                NODE_DOMAIN=$(wizard_input 'Домен ноды' '' check_node_domain) || return
-            fi
+            if valid_domain "$NODE_DOMAIN"; then selfsteal_domain=$NODE_DOMAIN; fi
+            info '  Для HTTPS укажите домен, направленный на этот VPS.'
+            NODE_DOMAIN=$(wizard_input 'Домен self-steal' "$selfsteal_domain" check_node_domain) || return
             SELFSTEAL_SERVER=$(select_selfsteal_server "$SELFSTEAL_SERVER") || return
         fi
         if [[ $ENABLE_BBR == no ]]; then
@@ -318,7 +300,7 @@ install_wizard() {
 
     node_preflight || return
     ui_step "$steps" 'Проверка настроек' "$steps"
-    info "  Нода       $NODE_DOMAIN"
+    if [[ -n $NODE_DOMAIN ]]; then info "  Адрес      $NODE_DOMAIN"; fi
     info "  Node Port  $NODE_PORT/tcp"
     if [[ $mode == full ]]; then
         info "  IP панели  $PANEL_IPS"

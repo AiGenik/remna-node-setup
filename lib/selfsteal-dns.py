@@ -19,13 +19,17 @@ def local_addresses():
     }
 
 
-def check_domain(domain, report):
+def public_addresses():
     try:
         assigned = local_addresses()
     except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError):
         sys.exit("Не удалось прочитать адреса VPS. Проверьте вывод ip -br address.")
 
-    public = {address for address in assigned if address.is_global}
+    return {address for address in assigned if address.is_global}
+
+
+def check_domain(domain, report):
+    public = public_addresses()
     expected = addresses_text(public)
     try:
         records = socket.getaddrinfo(domain, None, type=socket.SOCK_STREAM)
@@ -51,4 +55,7 @@ def check_domain(domain, report):
 
 
 if __name__ == "__main__":
-    check_domain(sys.argv[1], sys.argv[2] == "report")
+    if sys.argv[1] == "--public-ips":
+        print(addresses_text(public_addresses()))
+    else:
+        check_domain(sys.argv[1], sys.argv[2] == "report")

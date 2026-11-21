@@ -185,7 +185,8 @@ ui_menu_status() (
             configured='Настройки ноды сохранены'
             mark='●'
             if valid_port "$NODE_PORT"; then
-                address="$NODE_DOMAIN · $NODE_PORT/tcp"
+                address="$NODE_PORT/tcp"
+                if [[ -n $NODE_DOMAIN ]]; then address="$NODE_DOMAIN · $address"; fi
                 if (( ${#address} + 11 <= UI_RULE_WIDTH )); then configured="Нода · $address"; fi
             fi
         elif [[ -s ${CONFIG_DIR:-/etc/remna-node-setup}/host.json ]]; then
