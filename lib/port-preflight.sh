@@ -64,10 +64,12 @@ port_preflight() {
 
     if [[ -n ${SSH_PANEL_PROBE_HOST:-} ]]; then
         info "  Тест автоматически запустится с панели для $SSH_PANEL_PROBE_HOST."
+        active=$(yes_no '  Запустить проверку с панели?' y) || return
     else
-        info '  Для внешнего теста понадобится терминал панели.'
+        info '  Ручная проверка.'
+        info '  С компьютера · remna-ssh --panel'
+        active=$(yes_no '  Показать команду для ручной проверки?' n) || return
     fi
-    active=$(yes_no '  Запустить проверку с панели?' y) || return
     if [[ $active != yes ]]; then info '  Внешний обмен не проверялся.'; return 0; fi
     if [[ -n ${SSH_PANEL_PROBE_HOST:-} ]]; then
         local tls=0

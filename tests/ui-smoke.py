@@ -232,10 +232,11 @@ with Terminal() as terminal:
     terminal.enter("192.0.2.25")
     terminal.expect("Входящие порты VPN → [9443/tcp]")
     terminal.enter("9443/tcp 2443/udp")
-    screen = without_ansi(terminal.expect("Запустить проверку с панели? [Y/n]"))
+    screen = without_ansi(terminal.expect("Показать команду для ручной проверки? [y/N]"))
     assert "Проверка соединения" in screen and "8443/tcp · локальный self-steal" in screen
     assert "3333/tcp · панель → нода" in screen and "9443/tcp · VPN" in screen
-    terminal.enter("n")
+    assert "С компьютера · remna-ssh --panel" in screen
+    terminal.enter()
     screen = terminal.expect("Начать установку? [y/N]")
     assert KEY_MARKER.encode() not in screen
     assert b"3333" in screen and b"nginx" in screen and b"9443/tcp 2443/udp" in screen
@@ -385,10 +386,11 @@ with Terminal() as terminal:
     terminal.enter()
     terminal.expect("Порты VPN (TCP/UDP) → [443/tcp 9443/tcp]")
     terminal.enter()
-    screen = without_ansi(terminal.expect("Запустить проверку с панели? [Y/n]"))
+    screen = without_ansi(terminal.expect("Показать команду для ручной проверки? [y/N]"))
     assert all(f"{port}/tcp" in screen for port in (2222, 443, 8443, 9443))
-    terminal.enter("n")
-    terminal.expect("Enter — вернуться в меню")
+    terminal.enter()
+    screen = without_ansi(terminal.expect("Enter — вернуться в меню"))
+    assert "Внешний обмен не проверялся" in screen and "REMNA_PROBE" not in screen
     terminal.enter()
     terminal.expect("Номер пункта →")
     terminal.enter("q")
