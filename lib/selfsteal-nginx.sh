@@ -146,8 +146,17 @@ EOF_NGINX
     fi
 }
 
+_nginx_selfsteal_disable_stock_default() {
+    local link=/etc/nginx/sites-enabled/default target=/etc/nginx/sites-available/default
+    if [[ -L $link && $(readlink -f -- "$link") == "$target" ]] &&
+        _nginx_selfsteal_stock_file "$target"; then
+        rm -f -- "$link"
+    fi
+}
+
 _nginx_selfsteal_activate_config() {
     local stage
+    _nginx_selfsteal_disable_stock_default || return 1
     stage=$(mktemp /etc/nginx/conf.d/.remna-setup.XXXXXX) || return 1
     if ! _nginx_selfsteal_render_config "$1" > "$stage" ||
         ! chmod 0644 "$stage" || ! mv -f -- "$stage" "$_nginx_selfsteal_config"; then
@@ -263,5 +272,9 @@ nginx_selfsteal_stop() {
         systemctl disable --now "$_nginx_selfsteal_renewal.timer" || return 1
         systemctl stop "$_nginx_selfsteal_renewal.service" || return 1
     fi
-    systemctl disable --now nginx.service
+    systemctl disable --now nginx.service || return 1
+    if [[ ! -e /etc/nginx/sites-enabled/default && ! -L /etc/nginx/sites-enabled/default ]] &&
+        _nginx_selfsteal_stock_file /etc/nginx/sites-available/default; then
+        ln -s /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default
+    fi
 }

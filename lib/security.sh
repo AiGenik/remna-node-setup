@@ -311,7 +311,7 @@ security_install_sshd_jail() {
 enabled = true
 backend = systemd
 port = $SSH_PORT
-banaction = iptables-multiport
+banaction = iptables-multiport[blocktype=DROP]
 ignoreip = 127.0.0.1/8 ::1$admin_ips
 findtime = 10m
 bantime = 1h

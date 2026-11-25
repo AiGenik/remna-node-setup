@@ -4,7 +4,7 @@ SNAPSHOT_CONFIG=("$CONFIG_DIR/node.json" "$CONFIG_DIR/host.json" "$CONFIG_DIR/vp
 SNAPSHOT_NODE=("$NODE_DIR/compose.yaml" /etc/logrotate.d/remna-node-setup /etc/logrotate.d/remna-node-setup-node)
 SNAPSHOT_CADDY=(/etc/caddy/Caddyfile /var/www/remna-node-setup/index.html
     /var/www/remna-node-setup/robots.txt /var/www/remna-node-setup/favicon.svg)
-SNAPSHOT_NGINX=(/etc/nginx/conf.d/remna-node-setup.conf
+SNAPSHOT_NGINX=(/etc/nginx/conf.d/remna-node-setup.conf /etc/nginx/sites-enabled/default
     /etc/systemd/system/remna-node-setup-certbot.service /etc/systemd/system/remna-node-setup-certbot.timer)
 SELFSTEAL_UNITS=(caddy.service nginx.service remna-node-setup-certbot.timer)
 SNAPSHOT_NETWORK=(/etc/ufw /etc/default/ufw /etc/fail2ban/jail.d/remna-node-setup.local
