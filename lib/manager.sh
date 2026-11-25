@@ -139,6 +139,9 @@ apply_installation() {
         if [[ $ENABLE_BBR == yes ]]; then
             ui_install_phase bbr_apply || return
         fi
+        if [[ ${DISABLE_IPV6:-no} == yes ]]; then
+            ipv6_apply yes || return
+        fi
         if [[ $ENABLE_TRAFFIC_GUARD == yes ]]; then
             ui_install_phase traffic_guard_apply "$traffic_stage" || return
         fi
@@ -430,6 +433,40 @@ configure_bbr() {
     run_change 'config bbr' apply_bbr
 }
 
+apply_ipv6() {
+    DISABLE_IPV6=$1
+    save_config && ipv6_apply "$DISABLE_IPV6"
+}
+
+configure_ipv6() {
+    local action=${1-} desired scope='config ipv6' answer
+    require_config || return
+    case "$action" in
+        status) ipv6_status; return ;;
+        disable) desired=yes ;;
+        enable) desired=no ;;
+        '')
+            ipv6_status
+            if [[ $UI_INTERACTIVE != yes ]]; then return 0; fi
+            if [[ ${DISABLE_IPV6:-no} == yes ]] ||
+                [[ -r /proc/sys/net/ipv6/conf/all/disable_ipv6 && $(< /proc/sys/net/ipv6/conf/all/disable_ipv6) != 0 ]]; then
+                answer=$(yes_no '  Включить IPv6 обратно?' n) || return
+                [[ $answer == yes ]] || return 0
+                desired=no
+            else
+                answer=$(yes_no '  Отключить IPv6 на сервере?' y) || return
+                [[ $answer == yes ]] || return 0
+                desired=yes
+            fi
+            ;;
+        *) fail 'Используйте: remna-node-setup ipv6 [disable|enable|status].'; return 1 ;;
+    esac
+    if declare -F _selfsteal_nginx_owned_config >/dev/null && _selfsteal_nginx_owned_config; then
+        scope+=' selfsteal'
+    fi
+    run_change "$scope" apply_ipv6 "$desired"
+}
+
 repair_security_boot() {
     local consent
     security_ufw_active || { fail 'Сначала включите UFW в «Входящие порты и защита SSH».'; return 1; }
@@ -576,6 +613,7 @@ backup_scope() {
     if [[ $ENABLE_SECURITY == yes || $ENABLE_TRAFFIC_GUARD == yes ]]; then scope+=' network'; fi
     if [[ $ENABLE_SELFSTEAL == yes ]]; then scope+=' selfsteal'; fi
     if [[ $ENABLE_BBR == yes ]]; then scope+=' bbr'; fi
+    if [[ ${DISABLE_IPV6:-no} == yes ]]; then scope+=' ipv6'; fi
     printf '%s\n' "$scope"
 }
 
@@ -618,6 +656,7 @@ status_all() {
     if [[ $ENABLE_SECURITY == yes ]]; then security_status; fi
     if [[ -n $NODE_PORT || -n $VPN_PORTS ]]; then security_vpn_status || :; fi
     bbr_status
+    ipv6_status
     traffic_guard_status
     psiphon_status || :
 }
@@ -652,6 +691,14 @@ doctor() {
     if psiphon_is_managed; then psiphon_status || result=1; fi
     security_os_updates_status
     bbr_status
+    ipv6_status
+    if command -v timedatectl >/dev/null 2>&1; then
+        if [[ $(timedatectl show -p NTPSynchronized --value 2>/dev/null || :) == yes ]]; then
+            info 'Время синхронизировано по NTP.'
+        else
+            warn 'Синхронизация времени NTP не подтверждена (критично для REALITY).'
+        fi
+    fi
     df -h -- "$STATE_DIR" "$BACKUP_DIR" || result=1
     return "$result"
 }
@@ -730,6 +777,10 @@ dispatch() (
         bbr)
             [[ $# == 1 ]] || return 2
             if [[ -e $CONFIG_DIR/node.json ]]; then configure_bbr; else standalone_bbr; fi
+            ;;
+        ipv6)
+            [[ $# -le 2 ]] || return 2
+            if [[ -e $CONFIG_DIR/node.json ]]; then configure_ipv6 "$target"; else standalone_ipv6 "$target"; fi
             ;;
         preflight) [[ $# == 1 ]] || return 2; standalone_port_preflight ;;
         backup) [[ $# == 1 ]] || return 2; create_backup ;;

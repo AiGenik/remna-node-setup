@@ -75,7 +75,21 @@ security_ufw_public_rule() {
     local entry=$1 rules=$2 port protocol
     port=${entry%/*}
     protocol=${entry#*/}
-    grep -Eq "^$port(/$protocol)?( \(v6\))?[[:space:]]+(ALLOW|LIMIT)( IN)?[[:space:]]+Anywhere([[:space:]]|$)" <<< "$rules"
+    awk -v port="$port" -v proto="$protocol" '
+        {
+            target = $1
+            if (target != port && target != port "/" proto) next
+            if ($0 ~ /\(v6\)/) next
+            if ($0 ~ /[[:space:]](DENY|REJECT)([[:space:]]+IN)?[[:space:]]+Anywhere([[:space:]]|$)/) {
+                exit 1
+            }
+            if ($0 ~ /[[:space:]](ALLOW|LIMIT)([[:space:]]+IN)?[[:space:]]+Anywhere([[:space:]]|$)/) {
+                found = 1
+                exit 0
+            }
+        }
+        END { exit (found ? 0 : 1) }
+    ' <<< "$rules"
 }
 
 security_configured_vpn_ports() {
@@ -211,9 +225,9 @@ PY
 }
 
 security_remove_managed_ufw_rules() {
-    local keep_ssh=${1:-no} rules number rule groups='ssh|panel|node|vpn|acme'
+    local keep_ssh=${1:-no} rules number rule groups='ssh|panel|node|vpn|vpn-closed|acme'
     local -a arguments=()
-    if [[ $keep_ssh == yes ]]; then groups='panel|node|vpn|acme'; fi
+    if [[ $keep_ssh == yes ]]; then groups='panel|node|vpn|vpn-closed|acme'; fi
     local stored_pattern="^ufw ((allow|deny) [0-9]+/(tcp|udp)|allow from [[:xdigit:].:/]+ to any port [0-9]+ proto tcp) comment '(remna-node-setup:($groups))'$"
 
     if ! security_ufw_active; then
@@ -512,4 +526,58 @@ bbr_status() {
     [[ -n $device ]] || return 0
     current=$(tc qdisc show dev "$device" 2>/dev/null | awk '$4 == "root" {print $2}') || return 0
     if [[ -n $current ]]; then info "Текущая очередь $device — $current"; fi
+}
+
+ipv6_apply() {
+    local desired=${1:-${DISABLE_IPV6:-no}} config=/etc/sysctl.d/91-remna-node-setup-ipv6.conf temporary
+    case $desired in
+        yes|no) ;;
+        *) fail 'Укажите yes или no для состояния IPv6.'; return 1 ;;
+    esac
+    if [[ ! -e /proc/sys/net/ipv6/conf/all/disable_ipv6 ]]; then
+        warn 'Ядро не поддерживает sysctl для IPv6. Пропускаю настройку.'
+        return 0
+    fi
+    if [[ $desired == yes ]]; then
+        temporary=$(mktemp /etc/sysctl.d/.remna-node-setup-ipv6.XXXXXX) || return 1
+        if ! printf '%s\n' 'net.ipv6.conf.all.disable_ipv6 = 1' 'net.ipv6.conf.default.disable_ipv6 = 1' > "$temporary" ||
+           ! chmod 0644 "$temporary" || ! mv -f -- "$temporary" "$config"; then
+            rm -f -- "$temporary"
+            return 1
+        fi
+        sysctl -p "$config" >/dev/null || return 1
+        if [[ $(sysctl -n net.ipv6.conf.all.disable_ipv6) != 1 ||
+              $(sysctl -n net.ipv6.conf.default.disable_ipv6) != 1 ]]; then
+            fail 'Не удалось подтвердить отключение IPv6.'
+            return 1
+        fi
+        info 'IPv6 отключён на интерфейсах VPS.'
+    else
+        rm -f -- "$config" || return 1
+        sysctl -w net.ipv6.conf.all.disable_ipv6=0 net.ipv6.conf.default.disable_ipv6=0 >/dev/null || return 1
+        if [[ $(sysctl -n net.ipv6.conf.all.disable_ipv6) != 0 ]]; then
+            fail 'Не удалось включить IPv6.'
+            return 1
+        fi
+        info 'IPv6 включён.'
+    fi
+    if declare -F selfsteal_refresh_redirect >/dev/null &&
+       declare -F _selfsteal_nginx_owned_config >/dev/null &&
+       _selfsteal_nginx_owned_config; then
+        selfsteal_refresh_redirect || return 1
+    fi
+}
+
+ipv6_status() {
+    local flag
+    if [[ ! -r /proc/sys/net/ipv6/conf/all/disable_ipv6 ]]; then
+        info 'IPv6 · недоступен в ядре'
+        return 0
+    fi
+    flag=$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null) || flag=неизвестно
+    case $flag in
+        1) info 'IPv6 · отключён (sysctl)' ;;
+        0) info 'IPv6 · включён' ;;
+        *) info "IPv6 · $flag" ;;
+    esac
 }

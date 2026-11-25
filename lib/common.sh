@@ -312,16 +312,18 @@ load_config() {
       if .schema == 1 and (.node_port|type) == "number"
         and ((.ssh_port|type) == "number" or (.ssh_port == null and .security == "no"))
         and ((.security // "yes") | . == "yes" or . == "no")
+        and ((.disable_ipv6 // "no") | . == "yes" or . == "no")
         and ((.vpn_ports // "") | type) == "string"
       then [.node_domain, .node_port, .panel_ips, (.ssh_port // ""), .admin_ips, .selfsteal, .bbr, .traffic_guard,
             (.selfsteal_server // "caddy"), (.security // "yes"),
             (.vpn_ports // (if .security == "no" then "" else "443/tcp" end)),
-            (if has("vpn_ports") then "yes" else "no" end)] | .[]
+            (if has("vpn_ports") then "yes" else "no" end),
+            (.disable_ipv6 // "no")] | .[]
       else error("unsupported configuration")
       end' "$file") || return
     local fields
     mapfile -t fields <<< "$data"
-    [[ ${#fields[@]} == 12 && ${fields[8]} =~ ^(caddy|nginx)$ ]] || return 1
+    [[ ${#fields[@]} == 13 && ${fields[8]} =~ ^(caddy|nginx)$ ]] || return 1
     NODE_DOMAIN=${fields[0]}
     NODE_PORT=${fields[1]}
     PANEL_IPS=${fields[2]}
@@ -336,6 +338,8 @@ load_config() {
     VPN_PORTS=${fields[10]}
     # shellcheck disable=SC2034 # Consumed by security_prompt_vpn_ports.
     VPN_PORTS_SAVED=${fields[11]}
+    # shellcheck disable=SC2034 # Consumed by ipv6_apply and selfsteal.
+    DISABLE_IPV6=${fields[12]}
 }
 
 save_config() {
@@ -346,8 +350,9 @@ save_config() {
         --arg selfsteal "$ENABLE_SELFSTEAL" --arg webserver "$SELFSTEAL_SERVER" \
         --arg bbr "$ENABLE_BBR" --arg traffic "$ENABLE_TRAFFIC_GUARD" \
         --arg security "${ENABLE_SECURITY:-yes}" --arg vpn "${VPN_PORTS-443/tcp}" \
+        --arg ipv6 "${DISABLE_IPV6:-no}" \
         '{schema:1,node_domain:$domain,node_port:$port,panel_ips:$panel,ssh_port:$ssh,admin_ips:$admin,
-          selfsteal:$selfsteal,selfsteal_server:$webserver,bbr:$bbr,traffic_guard:$traffic,security:$security,vpn_ports:$vpn}' > "$tmp"; then
+          selfsteal:$selfsteal,selfsteal_server:$webserver,bbr:$bbr,traffic_guard:$traffic,security:$security,vpn_ports:$vpn,disable_ipv6:$ipv6}' > "$tmp"; then
         rm -f -- "$tmp"
         return 1
     fi

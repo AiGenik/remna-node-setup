@@ -137,6 +137,10 @@ grep -Fqx 'restart antiscan-move-rules.service' "$log"
 
 MOCK_UFW_EFFECTIVE=$'9443/tcp ALLOW Anywhere\n2443/udp ALLOW IN Anywhere'
 security_vpn_status
+MOCK_UFW_EFFECTIVE=$'9443/tcp (v6) ALLOW Anywhere (v6)\n2443/udp ALLOW IN Anywhere'
+if security_vpn_status > "$log" 2>&1; then exit 1; fi
+MOCK_UFW_EFFECTIVE=$'9443/tcp DENY IN Anywhere\n9443/tcp ALLOW IN Anywhere\n2443/udp ALLOW IN Anywhere'
+if security_vpn_status > "$log" 2>&1; then exit 1; fi
 MOCK_UFW_EFFECTIVE=$'9443/tcp ALLOW OUT Anywhere\n2443/udp ALLOW IN Anywhere'
 if security_vpn_status > "$log" 2>&1; then exit 1; fi
 grep -Fq 'Для 9443/tcp не найдено' "$log"
@@ -149,10 +153,11 @@ security_ufw_set_boot masked
 MOCK_UFW_BOOT=enabled
 
 MOCK_UFW_STATE=inactive
-MOCK_UFW_STORED=$'ufw allow 443/tcp comment \'remna-node-setup:vpn\'\nufw allow from 2001:db8::3 to any port 3003 proto tcp comment \'remna-node-setup:panel\'\nufw allow 8443/tcp comment \'manual\''
+MOCK_UFW_STORED=$'ufw allow 443/tcp comment \'remna-node-setup:vpn\'\nufw deny 8444/tcp comment \'remna-node-setup:vpn-closed\'\nufw allow from 2001:db8::3 to any port 3003 proto tcp comment \'remna-node-setup:panel\'\nufw allow 8443/tcp comment \'manual\''
 : > "$log"
 security_remove_managed_ufw_rules
 grep -Fqx -- '--force delete allow 443/tcp comment remna-node-setup:vpn' "$log"
+grep -Fqx -- '--force delete deny 8444/tcp comment remna-node-setup:vpn-closed' "$log"
 grep -Fqx -- '--force delete allow from 2001:db8::3 to any port 3003 proto tcp comment remna-node-setup:panel' "$log"
 if grep -Fq 'delete allow 8443/tcp' "$log"; then exit 1; fi
 

@@ -1,19 +1,629 @@
 <!doctype html>
-<html lang="ru">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Kestrel Systems — independent notes on Linux telemetry, NVMe storage benchmarks, and small-scale edge infrastructure.">
   <meta name="color-scheme" content="light dark">
-  <title>Полевые записи</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <title>Kestrel Systems — Infrastructure &amp; Telemetry Notes</title>
   <style>
-    body { max-width: 42rem; margin: 12vh auto; padding: 0 1.5rem; font: 1.125rem/1.65 Georgia, serif; }
-    h1 { line-height: 1.15; font-size: clamp(2.2rem, 7vw, 4.2rem); }
+    :root {
+      --bg: #f6f8fb;
+      --surface: #ffffff;
+      --surface-alt: #eef2f7;
+      --text: #0f172a;
+      --muted: #475569;
+      --border: #dbe3ee;
+      --accent: #0f4c81;
+      --accent-soft: #e0ecf7;
+      --ok: #0f766e;
+      --shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+      --radius: 12px;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      --sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    html[data-theme="dark"] {
+      --bg: #0b1220;
+      --surface: #111a2c;
+      --surface-alt: #18233a;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --border: #24324c;
+      --accent: #38bdf8;
+      --accent-soft: rgba(56, 189, 248, 0.14);
+      --ok: #2dd4bf;
+      --shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 16px/1.65 var(--sans);
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .wrap { max-width: 1040px; margin: 0 auto; padding: 0 20px; }
+
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      background: color-mix(in srgb, var(--surface) 88%, transparent);
+      backdrop-filter: blur(10px);
+      border-bottom: 1px solid var(--border);
+    }
+    .nav {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      min-height: 64px;
+    }
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 700;
+      color: var(--text);
+      letter-spacing: -0.02em;
+    }
+    .brand svg { width: 28px; height: 28px; flex-shrink: 0; }
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      flex-wrap: wrap;
+    }
+    .nav-links a { color: var(--muted); font-size: 0.94rem; font-weight: 500; }
+    .nav-links a:hover { color: var(--text); text-decoration: none; }
+    .theme-btn {
+      border: 1px solid var(--border);
+      background: var(--surface-alt);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 6px 11px;
+      font-size: 0.85rem;
+      cursor: pointer;
+    }
+
+    .hero {
+      padding: 56px 0 40px;
+      display: grid;
+      grid-template-columns: 1.45fr 1fr;
+      gap: 28px;
+      align-items: center;
+    }
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 0.82rem;
+      font-weight: 600;
+      margin-bottom: 14px;
+    }
+    .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--ok);
+    }
+    h1 {
+      margin: 0 0 14px;
+      font-size: clamp(1.85rem, 4vw, 2.75rem);
+      line-height: 1.15;
+      letter-spacing: -0.03em;
+    }
+    .lead {
+      margin: 0 0 24px;
+      color: var(--muted);
+      font-size: 1.06rem;
+      max-width: 56ch;
+    }
+    .actions { display: flex; gap: 12px; flex-wrap: wrap; }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 10px 18px;
+      border-radius: 9px;
+      font-weight: 600;
+      font-size: 0.94rem;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      cursor: pointer;
+    }
+    .btn.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #ffffff;
+    }
+    html[data-theme="dark"] .btn.primary { color: #08101c; }
+
+    .telemetry-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      box-shadow: var(--shadow);
+    }
+    .telemetry-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.85rem;
+      color: var(--muted);
+      margin-bottom: 14px;
+    }
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .metric {
+      background: var(--surface-alt);
+      border-radius: 9px;
+      padding: 12px;
+    }
+    .metric-label { font-size: 0.78rem; color: var(--muted); }
+    .metric-val { font-family: var(--mono); font-size: 1.1rem; font-weight: 700; margin-top: 2px; }
+    .spark { width: 100%; height: 64px; display: block; }
+
+    section { padding: 36px 0; }
+    .section-head {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 22px;
+      flex-wrap: wrap;
+    }
+    h2 { margin: 0; font-size: 1.45rem; letter-spacing: -0.02em; }
+    .sub { color: var(--muted); font-size: 0.94rem; margin: 4px 0 0; }
+
+    .filters { display: flex; gap: 8px; flex-wrap: wrap; }
+    .chip {
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--muted);
+      border-radius: 999px;
+      padding: 6px 13px;
+      font-size: 0.85rem;
+      font-weight: 500;
+      cursor: pointer;
+    }
+    .chip.active {
+      background: var(--accent-soft);
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 18px;
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      box-shadow: var(--shadow);
+    }
+    .card-meta {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin-bottom: 10px;
+    }
+    .tag {
+      font-family: var(--mono);
+      color: var(--accent);
+      font-size: 0.76rem;
+    }
+    .card h3 { margin: 0 0 8px; font-size: 1.08rem; line-height: 1.35; }
+    .card p { margin: 0 0 16px; color: var(--muted); font-size: 0.92rem; }
+    .read-btn {
+      align-self: flex-start;
+      border: 0;
+      background: none;
+      padding: 0;
+      color: var(--accent);
+      font-weight: 600;
+      font-size: 0.9rem;
+      cursor: pointer;
+    }
+
+    .table-wrap {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow-x: auto;
+      box-shadow: var(--shadow);
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+    th, td {
+      text-align: left;
+      padding: 13px 16px;
+      border-bottom: 1px solid var(--border);
+    }
+    th { font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+    tr:last-child td { border-bottom: 0; }
+    .mono { font-family: var(--mono); font-size: 0.86rem; }
+
+    .contact-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+      box-shadow: var(--shadow);
+    }
+    .form-row { display: grid; gap: 6px; margin-bottom: 12px; }
+    label { font-size: 0.86rem; font-weight: 600; }
+    input, textarea {
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      font: inherit;
+    }
+    .form-note { font-size: 0.88rem; color: var(--ok); margin-top: 8px; min-height: 1.4em; }
+
+    footer {
+      border-top: 1px solid var(--border);
+      margin-top: 32px;
+      padding: 24px 0 40px;
+      color: var(--muted);
+      font-size: 0.88rem;
+      display: flex;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    dialog {
+      max-width: 660px;
+      width: calc(100% - 28px);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+      color: var(--text);
+      padding: 24px;
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+    }
+    dialog::backdrop { background: rgba(15, 23, 42, 0.55); }
+    .dialog-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 16px;
+      margin-bottom: 14px;
+    }
+    .close-btn {
+      border: 1px solid var(--border);
+      background: var(--surface-alt);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 6px 10px;
+      cursor: pointer;
+    }
+    pre {
+      background: var(--surface-alt);
+      padding: 12px 14px;
+      border-radius: 8px;
+      overflow-x: auto;
+      font: 0.85rem/1.5 var(--mono);
+    }
+
+    @media (max-width: 860px) {
+      .hero, .cards, .contact-box { grid-template-columns: 1fr; }
+    }
   </style>
 </head>
 <body>
-  <main>
-    <h1>Полевые записи</h1>
-    <p>Короткие заметки о прогулках, погоде и смене сезонов.</p>
+  <header>
+    <div class="wrap nav">
+      <a class="brand" href="#top">
+        <svg viewBox="0 0 64 64" fill="none" aria-hidden="true">
+          <rect width="64" height="64" rx="14" fill="#132238"/>
+          <path d="M18 44V20h7v10l11-10h9L32 32l14 12h-9L25 33v11h-7z" fill="#e6eef8"/>
+          <circle cx="48" cy="18" r="4" fill="#38bdf8"/>
+        </svg>
+        <span>Kestrel Systems</span>
+      </a>
+      <nav class="nav-links" aria-label="Primary navigation">
+        <a href="#notes">Notes</a>
+        <a href="#benchmarks">Benchmarks</a>
+        <a href="#contact">Contact</a>
+        <button class="theme-btn" id="themeToggle" type="button">Theme</button>
+      </nav>
+    </div>
+  </header>
+
+  <main id="top" class="wrap">
+    <section class="hero">
+      <div>
+        <span class="eyebrow"><span class="dot"></span>Lab status · EU-North-02</span>
+        <h1>Engineering notes on Linux telemetry, NVMe I/O, and edge reliability.</h1>
+        <p class="lead">
+          Independent write-ups and reproducible hardware measurements from small virtualized Linux hosts,
+          kernel queue tuning tests, and long-running Prometheus exporters.
+        </p>
+        <div class="actions">
+          <a class="btn primary" href="#notes">Browse field notes</a>
+          <a class="btn" href="#benchmarks">View recent runs</a>
+        </div>
+      </div>
+
+      <aside class="telemetry-card" aria-label="Sample node telemetry snapshot">
+        <div class="telemetry-head">
+          <span>Snapshot · 24h rolling</span>
+          <span class="mono">kernel 6.8 LTS</span>
+        </div>
+        <div class="metric-grid">
+          <div class="metric">
+            <div class="metric-label">4K randread</div>
+            <div class="metric-val">118k IOPS</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">p99 sched</div>
+            <div class="metric-val">0.42 ms</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">Ring drops</div>
+            <div class="metric-val">0.00%</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">Clock drift</div>
+            <div class="metric-val">+0.3 ms</div>
+          </div>
+        </div>
+        <svg class="spark" viewBox="0 0 320 64" fill="none" aria-hidden="true">
+          <path d="M2 50 L36 44 L72 47 L108 35 L144 39 L180 28 L216 32 L252 22 L288 26 L318 18"
+                stroke="#0f4c81" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M2 50 L36 44 L72 47 L108 35 L144 39 L180 28 L216 32 L252 22 L288 26 L318 18 L318 62 L2 62 Z"
+                fill="rgba(56,189,248,0.14)"/>
+        </svg>
+      </aside>
+    </section>
+
+    <section id="notes">
+      <div class="section-head">
+        <div>
+          <h2>Field Notes</h2>
+          <p class="sub">Short technical reports from production experiments.</p>
+        </div>
+        <div class="filters" role="group" aria-label="Filter notes">
+          <button class="chip active" type="button" data-filter="all">All</button>
+          <button class="chip" type="button" data-filter="systems">Systems</button>
+          <button class="chip" type="button" data-filter="storage">Storage</button>
+          <button class="chip" type="button" data-filter="networking">Networking</button>
+        </div>
+      </div>
+
+      <div class="cards" id="notesGrid">
+        <article class="card" data-category="networking">
+          <div>
+            <div class="card-meta">
+              <span class="tag">#networking</span>
+              <time datetime="2026-10-14">Oct 14, 2026</time>
+            </div>
+            <h3>Comparing fq and fq_codel under bursty TCP workloads</h3>
+            <p>Measured tail latency across 10 Gbps virtual NICs when pacing 400+ concurrent HTTP/2 streams.</p>
+          </div>
+          <button class="read-btn" type="button" data-article="fq">Read summary →</button>
+        </article>
+
+        <article class="card" data-category="storage">
+          <div>
+            <div class="card-meta">
+              <span class="tag">#storage</span>
+              <time datetime="2026-09-28">Sep 28, 2026</time>
+            </div>
+            <h3>Fio queue depth scaling on virtualized NVMe volumes</h3>
+            <p>Why iodepth=32 with io_uring cuts CPU overhead by 19% compared to libaio on small instances.</p>
+          </div>
+          <button class="read-btn" type="button" data-article="nvme">Read summary →</button>
+        </article>
+
+        <article class="card" data-category="systems">
+          <div>
+            <div class="card-meta">
+              <span class="tag">#systems</span>
+              <time datetime="2026-08-19">Aug 19, 2026</time>
+            </div>
+            <h3>Keeping systemd-timesyncd accurate on KVM guests</h3>
+            <p>Notes on kvm-clock drift, chrony polling intervals, and avoiding TLS validation jitter.</p>
+          </div>
+          <button class="read-btn" type="button" data-article="clock">Read summary →</button>
+        </article>
+      </div>
+    </section>
+
+    <section id="benchmarks">
+      <div class="section-head">
+        <div>
+          <h2>Recent Lab Runs</h2>
+          <p class="sub">Reference baselines recorded after kernel and sysctl updates.</p>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Profile</th>
+              <th>Kernel</th>
+              <th>Qdisc / CC</th>
+              <th>Median RTT</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>eu-north-kvm-02</td>
+              <td class="mono">6.8.0-49-generic</td>
+              <td class="mono">fq / bbr</td>
+              <td class="mono">14.2 ms</td>
+              <td>Baseline</td>
+            </tr>
+            <tr>
+              <td>eu-central-kvm-05</td>
+              <td class="mono">6.8.0-49-generic</td>
+              <td class="mono">fq_codel / cubic</td>
+              <td class="mono">19.8 ms</td>
+              <td>Archived</td>
+            </tr>
+            <tr>
+              <td>eu-west-arm-01</td>
+              <td class="mono">6.8.0-48-generic</td>
+              <td class="mono">fq / bbr</td>
+              <td class="mono">22.4 ms</td>
+              <td>Baseline</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="contact">
+      <div class="section-head">
+        <div>
+          <h2>Contact &amp; Errata</h2>
+          <p class="sub">Corrections, methodology questions, or hardware test requests.</p>
+        </div>
+      </div>
+      <div class="contact-box">
+        <div>
+          <h3 style="margin-top:0">About this notebook</h3>
+          <p style="color:var(--muted)">
+            Kestrel Systems is a static engineering notebook used to document Linux host baselines,
+            disk scheduler behavior, and packet-pacing tests. All benchmarks are published as plain HTML
+            without third-party trackers.
+          </p>
+          <p class="mono" style="color:var(--muted); margin-bottom:0">
+            Update cadence: monthly baseline snapshots
+          </p>
+        </div>
+        <form id="errataForm">
+          <div class="form-row">
+            <label for="senderEmail">Reply address</label>
+            <input id="senderEmail" type="email" required placeholder="engineer@example.org">
+          </div>
+          <div class="form-row">
+            <label for="noteBody">Message</label>
+            <textarea id="noteBody" rows="3" required placeholder="Reference article or measurement note..."></textarea>
+          </div>
+          <button class="btn primary" type="submit">Queue note</button>
+          <div class="form-note" id="formStatus" role="status" aria-live="polite"></div>
+        </form>
+      </div>
+    </section>
   </main>
+
+  <footer class="wrap">
+    <span>© 2026 Kestrel Systems · Static edition</span>
+    <span><a href="/robots.txt">robots.txt</a> · <a href="#top">Back to top</a></span>
+  </footer>
+
+  <dialog id="articleModal" aria-labelledby="modalTitle">
+    <div class="dialog-head">
+      <div>
+        <div class="tag" id="modalTag"></div>
+        <h3 id="modalTitle" style="margin:4px 0 0"></h3>
+      </div>
+      <button class="close-btn" id="closeModal" type="button">Close</button>
+    </div>
+    <div id="modalBody"></div>
+  </dialog>
+
+  <script>
+    (function () {
+      var root = document.documentElement;
+      var saved = null;
+      try { saved = localStorage.getItem("kestrel-theme"); } catch (_) {}
+      if (saved === "dark" || saved === "light") {
+        root.setAttribute("data-theme", saved);
+      } else if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
+        root.setAttribute("data-theme", "dark");
+      }
+
+      document.getElementById("themeToggle").addEventListener("click", function () {
+        var next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
+        root.setAttribute("data-theme", next);
+        try { localStorage.setItem("kestrel-theme", next); } catch (_) {}
+      });
+
+      var chips = document.querySelectorAll(".chip");
+      var cards = document.querySelectorAll("#notesGrid .card");
+      chips.forEach(function (chip) {
+        chip.addEventListener("click", function () {
+          var filter = chip.getAttribute("data-filter");
+          chips.forEach(function (c) { c.classList.remove("active"); });
+          chip.classList.add("active");
+          cards.forEach(function (card) {
+            var match = filter === "all" || card.getAttribute("data-category") === filter;
+            card.style.display = match ? "flex" : "none";
+          });
+        });
+      });
+
+      var articles = {
+        fq: {
+          tag: "#networking · Oct 14, 2026",
+          title: "Comparing fq and fq_codel under bursty TCP workloads",
+          body: "<p>Switching the root qdisc from <code>pfifo_fast</code> to <code>fq</code> paired with BBR pacing reduced p99 socket write stalls during bursty multiplexed transfers.</p><pre>net.core.default_qdisc = fq\nnet.ipv4.tcp_congestion_control = bbr</pre><p>CPU utilization stayed within 1.5% across 2 vCPU KVM guests with zero ring buffer drops.</p>"
+        },
+        nvme: {
+          tag: "#storage · Sep 28, 2026",
+          title: "Fio queue depth scaling on virtualized NVMe volumes",
+          body: "<p>Testing 4K random reads with <code>--ioengine=io_uring --iodepth=32</code> yielded 118k IOPS while keeping softirq overhead predictable.</p><pre>fio --name=randread --ioengine=io_uring --rw=randread --bs=4k --iodepth=32</pre>"
+        },
+        clock: {
+          tag: "#systems · Aug 19, 2026",
+          title: "Keeping systemd-timesyncd accurate on KVM guests",
+          body: "<p>Short-lived clock skew above 30 seconds often triggers handshake failures on strict TLS endpoints. Verifying <code>timedatectl status</code> after provisioning avoids silent drift.</p><pre>timedatectl show --property=NTPSynchronized --value</pre>"
+        }
+      };
+
+      var modal = document.getElementById("articleModal");
+      document.querySelectorAll(".read-btn").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          var item = articles[btn.getAttribute("data-article")];
+          if (!item) return;
+          document.getElementById("modalTag").textContent = item.tag;
+          document.getElementById("modalTitle").textContent = item.title;
+          document.getElementById("modalBody").innerHTML = item.body;
+          if (typeof modal.showModal === "function") modal.showModal();
+        });
+      });
+      document.getElementById("closeModal").addEventListener("click", function () {
+        modal.close();
+      });
+
+      document.getElementById("errataForm").addEventListener("submit", function (event) {
+        event.preventDefault();
+        document.getElementById("formStatus").textContent = "Note queued locally for review (static preview).";
+        event.target.reset();
+      });
+    })();
+  </script>
 </body>
 </html>

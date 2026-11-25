@@ -5,6 +5,39 @@ _selfsteal_site=/var/www/remna-node-setup
 _selfsteal_marker='# Managed by remna-node-setup'
 _selfsteal_endpoint=127.0.0.1:8443
 
+_selfsteal_legacy_index_sha256=d0ed18da9879637dfd2fe39b88442cf7c76e46fb45bb5f76f536a1b21e9d2f74
+
+_selfsteal_ipv6_enabled() {
+    local flag=/proc/sys/net/ipv6/conf/all/disable_ipv6
+    if [[ ${DISABLE_IPV6:-no} == yes ]]; then return 1; fi
+    if [[ -r $flag && $(<"$flag") != 0 ]]; then return 1; fi
+    return 0
+}
+
+_selfsteal_file_sha256() {
+    local file=$1 sum
+    if command -v sha256sum >/dev/null 2>&1; then
+        sum=$(sha256sum -- "$file") || return 1
+    else
+        sum=$(shasum -a 256 -- "$file") || return 1
+    fi
+    printf '%s\n' "${sum%% *}"
+}
+
+_selfsteal_install_site_files() {
+    local asset
+    install -d -m 0755 "$_selfsteal_site" || return 1
+    if [[ ! -f $_selfsteal_site/index.html ]] ||
+        [[ $(_selfsteal_file_sha256 "$_selfsteal_site/index.html" 2>/dev/null) == "$_selfsteal_legacy_index_sha256" ]]; then
+        install -m 0644 "$PROJECT_DIR/templates/index.html" "$_selfsteal_site/index.html" || return 1
+    fi
+    for asset in robots.txt favicon.svg; do
+        if [[ -r $PROJECT_DIR/templates/$asset && ! -e $_selfsteal_site/$asset && ! -L $_selfsteal_site/$asset ]]; then
+            install -m 0644 "$PROJECT_DIR/templates/$asset" "$_selfsteal_site/$asset" || return 1
+        fi
+    done
+}
+
 _selfsteal_caddy_owned_config() {
     [[ -f $_selfsteal_caddyfile && ! -L $_selfsteal_caddyfile ]] &&
         grep -Fxq "$_selfsteal_marker" "$_selfsteal_caddyfile"
@@ -46,6 +79,7 @@ selfsteal_preflight() {
     if _selfsteal_caddy_owned_config; then owned_units+=(caddy.service); fi
     if _selfsteal_nginx_owned_config; then owned_units+=(nginx.service); fi
     if [[ -L $_selfsteal_site || -L $_selfsteal_site/index.html ||
+        -L $_selfsteal_site/robots.txt || -L $_selfsteal_site/favicon.svg ||
         ( -e $_selfsteal_site/index.html && ${#owned_units[@]} == 0 ) ]]; then
         fail "Каталог страницы $_selfsteal_site уже используется."
         return 1
@@ -98,6 +132,7 @@ $_selfsteal_marker
 }
 
 http://$domain {
+	header -Server
 	redir https://${redirect_host}{uri} 308
 }
 
@@ -107,6 +142,12 @@ https://$domain:8443 {
 		issuer acme {
 			disable_tlsalpn_challenge
 		}
+	}
+	header {
+		-Server
+		X-Frame-Options "SAMEORIGIN"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
 	}
 	root * $_selfsteal_site
 	file_server
@@ -141,10 +182,8 @@ _selfsteal_caddy_activate_config() {
 _selfsteal_caddy_apply() {
     local attempt
     apt_install_current caddy || return 1
-    install -d -m 0755 /etc/caddy "$_selfsteal_site" || return 1
-    if [[ ! -f $_selfsteal_site/index.html ]]; then
-        install -m 0644 "$PROJECT_DIR/templates/index.html" "$_selfsteal_site/index.html" || return 1
-    fi
+    install -d -m 0755 /etc/caddy || return 1
+    _selfsteal_install_site_files || return 1
     _selfsteal_caddy_activate_config || return 1
     info "Caddy получает сертификат для $NODE_DOMAIN через порт 80."
     for ((attempt = 0; attempt < 35; attempt++)); do
@@ -181,9 +220,19 @@ selfsteal_verify() {
 }
 
 selfsteal_refresh_redirect() {
+    local domain=${NODE_DOMAIN%.} cert_dir
+    cert_dir=$STATE_DIR/nginx-certbot/config/live/$domain
     case "$SELFSTEAL_SERVER" in
         caddy) _selfsteal_caddy_owned_config && _selfsteal_caddy_activate_config ;;
-        nginx) _selfsteal_nginx_owned_config && _nginx_selfsteal_activate_config tls ;;
+        nginx)
+            if _selfsteal_nginx_owned_config; then
+                if [[ -s $cert_dir/fullchain.pem && -s $cert_dir/privkey.pem ]]; then
+                    _nginx_selfsteal_activate_config tls
+                else
+                    _nginx_selfsteal_activate_config http
+                fi
+            fi
+            ;;
     esac
 }
 

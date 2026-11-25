@@ -12,18 +12,20 @@ load_host_settings() {
         and (.admin_ips | type) == "string"
         and ((.ssh_port == null) or (.ssh_port | type) == "number")
         and ((.security // "yes") == "yes" or .security == "no")
+        and ((.disable_ipv6 // "no") == "yes" or .disable_ipv6 == "no")
         and ((.vpn_ports // "") | type) == "string"
         and (.selfsteal_server == "caddy" or .selfsteal_server == "nginx")
         and ([.selfsteal, .bbr, .traffic_guard] | all(. == "yes" or . == "no"))
       then [.node_domain, (.ssh_port // ""), .admin_ips, .selfsteal, .selfsteal_server, .bbr, .traffic_guard,
-            (.vpn_ports // ""), (.security // (if .ssh_port != null then "yes" else "no" end))] | .[]
+            (.vpn_ports // ""), (.security // (if .ssh_port != null then "yes" else "no" end)),
+            (.disable_ipv6 // "no")] | .[]
       else error("invalid host configuration")
       end' "$file" 2>/dev/null); then
         fail "Не удалось прочитать настройки сервера из $file."
         return 2
     fi
     mapfile -t fields <<< "$data"
-    if [[ ${#fields[@]} != 9 ]] ||
+    if [[ ${#fields[@]} != 10 ]] ||
         { [[ -n ${fields[1]} ]] && ! valid_port "${fields[1]}"; } ||
         { [[ ${fields[3]} == yes || -n ${fields[0]} ]] && ! valid_domain "${fields[0]}"; }; then
         fail "Проверьте настройки сервера в $file."
@@ -40,6 +42,7 @@ load_host_settings() {
     ENABLE_TRAFFIC_GUARD=${fields[6]}
     VPN_PORTS=${fields[7]}
     ENABLE_SECURITY=${fields[8]}
+    DISABLE_IPV6=${fields[9]}
     VPN_PORTS_SAVED=yes
 }
 
@@ -59,6 +62,7 @@ _standalone_load() {
     ENABLE_BBR=no
     ENABLE_TRAFFIC_GUARD=no
     ENABLE_SECURITY=no
+    DISABLE_IPV6=no
     VPN_PORTS=
     VPN_PORTS_SAVED=no
 }
@@ -69,10 +73,10 @@ _standalone_save() {
     if ! jq -n --arg domain "$NODE_DOMAIN" --argjson ssh "${SSH_PORT:-null}" --arg admin "$ADMIN_IPS" \
         --arg selfsteal "$ENABLE_SELFSTEAL" --arg webserver "$SELFSTEAL_SERVER" \
         --arg bbr "$ENABLE_BBR" --arg traffic "$ENABLE_TRAFFIC_GUARD" \
-        --arg security "$ENABLE_SECURITY" --arg vpn "$VPN_PORTS" \
+        --arg security "$ENABLE_SECURITY" --arg vpn "$VPN_PORTS" --arg ipv6 "${DISABLE_IPV6:-no}" \
         '{schema:1,node_domain:$domain,ssh_port:$ssh,admin_ips:$admin,
           selfsteal:$selfsteal,selfsteal_server:$webserver,bbr:$bbr,traffic_guard:$traffic,
-          security:$security,vpn_ports:$vpn}' > "$tmp" ||
+          security:$security,vpn_ports:$vpn,disable_ipv6:$ipv6}' > "$tmp" ||
         ! mv -f -- "$tmp" "$CONFIG_DIR/host.json"; then
         rm -f -- "$tmp"
         return 1
@@ -134,6 +138,41 @@ _standalone_apply_bbr() {
 standalone_bbr() {
     _standalone_load || return
     run_change 'config bbr' _standalone_apply_bbr
+}
+
+_standalone_apply_ipv6() {
+    DISABLE_IPV6=$1
+    ipv6_apply "$DISABLE_IPV6" || return
+    _standalone_save
+}
+
+standalone_ipv6() {
+    local action=${1-} desired scope='config ipv6' answer
+    _standalone_load || return
+    case "$action" in
+        status) ipv6_status; return ;;
+        disable) desired=yes ;;
+        enable) desired=no ;;
+        '')
+            ipv6_status
+            if [[ $UI_INTERACTIVE != yes ]]; then return 0; fi
+            if [[ $DISABLE_IPV6 == yes ]] ||
+                [[ -r /proc/sys/net/ipv6/conf/all/disable_ipv6 && $(< /proc/sys/net/ipv6/conf/all/disable_ipv6) != 0 ]]; then
+                answer=$(yes_no '  Включить IPv6 обратно?' n) || return
+                [[ $answer == yes ]] || return 0
+                desired=no
+            else
+                answer=$(yes_no '  Отключить IPv6 на сервере?' y) || return
+                [[ $answer == yes ]] || return 0
+                desired=yes
+            fi
+            ;;
+        *) fail 'Используйте: remna-node-setup ipv6 [disable|enable|status].'; return 1 ;;
+    esac
+    if declare -F _selfsteal_nginx_owned_config >/dev/null && _selfsteal_nginx_owned_config; then
+        scope+=' selfsteal'
+    fi
+    run_change "$scope" _standalone_apply_ipv6 "$desired"
 }
 
 _standalone_apply_traffic_guard() {

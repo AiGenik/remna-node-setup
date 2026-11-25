@@ -31,6 +31,7 @@ select_selfsteal_server() { printf '%s\n' "${2:-$1}"; }
 selfsteal_preflight() { :; }
 selfsteal_apply() { :; }
 bbr_apply() { :; }
+ipv6_apply() { [[ $1 == yes || $1 == no ]]; }
 traffic_guard_prepare() { [[ -d $1 ]]; }
 traffic_guard_apply() { [[ -d $1 ]]; }
 traffic_guard_status() { :; }
@@ -74,8 +75,16 @@ run_change() {
 if load_host_settings; then exit 1; fi
 standalone_bbr
 load_host_settings
-[[ $ENABLE_BBR == yes && -z $SSH_PORT && -z $NODE_PORT && -z $PANEL_IPS ]]
+[[ $ENABLE_BBR == yes && $DISABLE_IPV6 == no && -z $SSH_PORT && -z $NODE_PORT && -z $PANEL_IPS ]]
 [[ $(< "$CONFIG_DIR/scope") == 'config bbr' ]]
+
+standalone_ipv6 disable
+load_host_settings
+[[ $DISABLE_IPV6 == yes ]]
+[[ $(< "$CONFIG_DIR/scope") == 'config ipv6' ]]
+standalone_ipv6 enable
+load_host_settings
+[[ $DISABLE_IPV6 == no ]]
 
 standalone_security
 load_host_settings

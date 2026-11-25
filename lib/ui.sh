@@ -268,6 +268,7 @@ MENU_ACTIONS=(
     'components|6|Gemini · Шаблон для Remnawave|psiphon profile'
     'components|7|Сменить порт VPN|vpn-port'
     'components|8|Восстановить автозапуск защиты|security boot'
+    'components|9|Отключить или включить IPv6|ipv6'
     'diagnostics|1|Статус ноды и компонентов|status'
     'diagnostics|2|Проверка портов и сервисов|doctor'
     'diagnostics|3|Логи ноды|logs'

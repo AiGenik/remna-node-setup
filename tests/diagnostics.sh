@@ -38,6 +38,7 @@ traffic_guard_firewall_active() { [[ $guard == yes ]]; }
 load_config() { return 0; }
 _selfsteal_validate_domain() { [[ $1 == report && $dns == yes ]]; }
 bbr_status() { :; }
+ipv6_status() { :; }
 security_os_updates_status() { :; }
 psiphon_is_managed() { return 1; }
 

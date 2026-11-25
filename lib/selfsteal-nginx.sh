@@ -65,15 +65,18 @@ nginx_selfsteal_preflight() {
 }
 
 _nginx_selfsteal_render_config() {
-    local mode=$1 domain=${NODE_DOMAIN%.} redirect_host
+    local mode=$1 domain=${NODE_DOMAIN%.} redirect_host listen_v6=''
     local cert_dir=$STATE_DIR/nginx-certbot/config/live/$domain
     redirect_host=$(selfsteal_redirect_host) || return
+    if _selfsteal_ipv6_enabled; then
+        listen_v6=$'\n    listen [::]:80;'
+    fi
     cat <<EOF_NGINX
 $_selfsteal_marker
 server {
-    listen 80;
-    listen [::]:80;
+    listen 80;${listen_v6}
     server_name $domain;
+    server_tokens off;
 
     location ^~ /.well-known/acme-challenge/ {
         root "$_selfsteal_site";
@@ -84,6 +87,15 @@ server {
         return 308 https://$redirect_host\$request_uri;
     }
 }
+
+server {
+    listen 80 default_server;${listen_v6:+
+    listen [::]:80 default_server;}
+    server_name _;
+    server_tokens off;
+
+    return 444;
+}
 EOF_NGINX
     if [[ $mode == tls ]]; then
         cat <<EOF_NGINX
@@ -91,16 +103,44 @@ EOF_NGINX
 server {
     listen 127.0.0.1:8443 ssl http2;
     server_name $domain;
+    server_tokens off;
 
     ssl_certificate "$cert_dir/fullchain.pem";
     ssl_certificate_key "$cert_dir/privkey.pem";
     ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+    ssl_session_tickets off;
+
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 
     root "$_selfsteal_site";
     index index.html;
+
+    location = /favicon.ico {
+        log_not_found off;
+        access_log off;
+        return 204;
+    }
+
     location / {
         try_files \$uri \$uri/ =404;
     }
+}
+
+server {
+    listen 127.0.0.1:8443 ssl default_server;
+    server_name _;
+    server_tokens off;
+
+    ssl_certificate "$cert_dir/fullchain.pem";
+    ssl_certificate_key "$cert_dir/privkey.pem";
+
+    return 204;
 }
 EOF_NGINX
     fi
@@ -176,6 +216,7 @@ nginx_selfsteal_verify() {
 
 nginx_selfsteal_apply() {
     local domain=${NODE_DOMAIN%.} attempt version_before version_after old_pid=''
+    local cert_dir=$STATE_DIR/nginx-certbot/config/live/$domain
     nginx_selfsteal_preflight || return
     if systemctl is-active --quiet nginx.service; then
         old_pid=$(systemctl show -p MainPID --value nginx.service) || return
@@ -184,18 +225,21 @@ nginx_selfsteal_apply() {
     apt_install_current nginx certbot || return 1
     version_after=$(apt_installed_version nginx) || return
     install -d -m 0755 /etc/nginx/conf.d "$_selfsteal_site/.well-known/acme-challenge" || return 1
-    if [[ ! -f $_selfsteal_site/index.html ]]; then
-        install -m 0644 "$PROJECT_DIR/templates/index.html" "$_selfsteal_site/index.html" || return 1
-    fi
+    _selfsteal_install_site_files || return 1
     install -d -m 0700 "$STATE_DIR/nginx-certbot" || return 1
 
     if ! nginx_selfsteal_verify; then
         _nginx_selfsteal_activate_config http || return 1
     fi
     info "Certbot проверяет $domain через TCP 80."
-    _nginx_selfsteal_certbot certonly --non-interactive --webroot --webroot-path "$_selfsteal_site" \
+    if ! _nginx_selfsteal_certbot certonly --non-interactive --webroot --webroot-path "$_selfsteal_site" \
         --preferred-challenges http-01 --cert-name "$domain" -d "$domain" \
-        --agree-tos --register-unsafely-without-email --keep-until-expiring || return 1
+        --agree-tos --register-unsafely-without-email --keep-until-expiring; then
+        if [[ -s $cert_dir/fullchain.pem && -s $cert_dir/privkey.pem ]]; then
+            _nginx_selfsteal_activate_config tls || :
+        fi
+        return 1
+    fi
 
     _nginx_selfsteal_activate_config tls || return 1
     if [[ -n $old_pid && $version_before != "$version_after" &&

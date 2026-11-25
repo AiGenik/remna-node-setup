@@ -2,7 +2,8 @@
 
 SNAPSHOT_CONFIG=("$CONFIG_DIR/node.json" "$CONFIG_DIR/host.json" "$CONFIG_DIR/vpn-port.json" "$NODE_SECRET")
 SNAPSHOT_NODE=("$NODE_DIR/compose.yaml" /etc/logrotate.d/remna-node-setup /etc/logrotate.d/remna-node-setup-node)
-SNAPSHOT_CADDY=(/etc/caddy/Caddyfile /var/www/remna-node-setup/index.html)
+SNAPSHOT_CADDY=(/etc/caddy/Caddyfile /var/www/remna-node-setup/index.html
+    /var/www/remna-node-setup/robots.txt /var/www/remna-node-setup/favicon.svg)
 SNAPSHOT_NGINX=(/etc/nginx/conf.d/remna-node-setup.conf
     /etc/systemd/system/remna-node-setup-certbot.service /etc/systemd/system/remna-node-setup-certbot.timer)
 SELFSTEAL_UNITS=(caddy.service nginx.service remna-node-setup-certbot.timer)
@@ -10,6 +11,7 @@ SNAPSHOT_NETWORK=(/etc/ufw /etc/default/ufw /etc/fail2ban/jail.d/remna-node-setu
     /etc/ipset.conf /etc/systemd/system/antiscan-ipset-restore.service
     /etc/systemd/system/antiscan-move-rules.service "$STATE_DIR/traffic-guard")
 SNAPSHOT_BBR=(/etc/sysctl.d/90-remna-node-setup-bbr.conf)
+SNAPSHOT_IPV6=(/etc/sysctl.d/91-remna-node-setup-ipv6.conf)
 TG_UNITS=(antiscan-ipset-restore.service antiscan-move-rules.service)
 ROLLBACK_UNIT=remna-node-setup-rollback
 PENDING_FILE=$STATE_DIR/pending
@@ -92,6 +94,11 @@ capture_snapshot() {
         path_snapshot "$dir" "${SNAPSHOT_BBR[@]}" || return
         sysctl -n net.core.default_qdisc > "$dir/qdisc" 2>/dev/null || :
         sysctl -n net.ipv4.tcp_congestion_control > "$dir/cc" 2>/dev/null || :
+    fi
+    if has_scope "$scope" ipv6; then
+        path_snapshot "$dir" "${SNAPSHOT_IPV6[@]}" || return
+        sysctl -n net.ipv6.conf.all.disable_ipv6 > "$dir/ipv6-all" 2>/dev/null || :
+        sysctl -n net.ipv6.conf.default.disable_ipv6 > "$dir/ipv6-default" 2>/dev/null || :
     fi
     if has_scope "$scope" network; then
         path_snapshot "$dir" "${SNAPSHOT_NETWORK[@]}" || return
@@ -245,6 +252,15 @@ restore_snapshot() {
         restore_step 'конфигурацию self-steal' restore_selfsteal_files "$dir" || errors=1
     fi
     if has_scope "$scope" network; then restore_step 'сетевые правила' restore_network "$dir" || errors=1; fi
+    if has_scope "$scope" ipv6; then
+        path_restore "$dir" "${SNAPSHOT_IPV6[@]}" || errors=1
+        if [[ -s $dir/ipv6-all && $(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null) != "$(< "$dir/ipv6-all")" ]]; then
+            restore_step IPv6 sysctl -qw "net.ipv6.conf.all.disable_ipv6=$(< "$dir/ipv6-all")" || errors=1
+        fi
+        if [[ -s $dir/ipv6-default && $(sysctl -n net.ipv6.conf.default.disable_ipv6 2>/dev/null) != "$(< "$dir/ipv6-default")" ]]; then
+            restore_step IPv6 sysctl -qw "net.ipv6.conf.default.disable_ipv6=$(< "$dir/ipv6-default")" || errors=1
+        fi
+    fi
     if has_scope "$scope" selfsteal; then
         restore_step 'сервисы self-steal' restore_selfsteal_runtime "$dir" || errors=1
     fi

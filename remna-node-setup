@@ -61,6 +61,7 @@ Remna Node Setup
   remna-node-setup vpn-port           Перенести VPN на другой TCP-порт
   remna-node-setup vpn-port profile СТАРЫЙ НОВЫЙ  Заменить порт в JSON из stdin
   remna-node-setup bbr                 Включить BBR и fq
+  remna-node-setup ipv6 [disable|enable|status]  Отключить или включить IPv6
   remna-node-setup status              Статус
   remna-node-setup doctor              Диагностика
   remna-node-setup preflight           Проверить порты и связь с панели до установки
@@ -90,11 +91,11 @@ self_test() {
     for name in node_apply node_verify node_restore_runtime node_release_image selfsteal_apply selfsteal_verify \
         nginx_selfsteal_apply nginx_selfsteal_stop security_apply security_preflight security_detect_vpn_ports \
         apt_install_current apt_upgrade_installed_preview apt_upgrade_installed_apply \
-        security_prompt_vpn_ports security_vpn_status security_os_updates_status bbr_apply traffic_guard_prepare traffic_guard_apply \
-        traffic_guard_capture_runtime traffic_guard_restore_before_ufw traffic_guard_restore_after_ufw \
-        release_update release_rollback release_acquire_lock install_wizard restore_snapshot \
-        load_host_settings standalone_selfsteal standalone_security standalone_bbr standalone_traffic_guard \
-        auto_update_enabled psiphon_configure psiphon_is_managed psiphon_select_settings \
+        security_prompt_vpn_ports security_vpn_status security_os_updates_status bbr_apply ipv6_apply \
+        traffic_guard_prepare traffic_guard_apply traffic_guard_capture_runtime traffic_guard_restore_before_ufw \
+        traffic_guard_restore_after_ufw release_update release_rollback release_acquire_lock install_wizard restore_snapshot \
+        load_host_settings standalone_selfsteal standalone_security standalone_bbr standalone_ipv6 standalone_traffic_guard \
+        configure_ipv6 auto_update_enabled psiphon_configure psiphon_is_managed psiphon_select_settings \
         psiphon_apply_settings psiphon_profile psiphon_profile_merge psiphon_outbound \
         vpn_port_wizard update_all standalone_port_preflight; do
         declare -F "$name" >/dev/null || { fail "Не загружен модуль $name."; return 1; }
@@ -103,6 +104,8 @@ self_test() {
     [[ -r $PROJECT_DIR/lib/selfsteal-dns.py ]] || { fail 'Модуль проверки DNS отсутствует.'; return 1; }
     [[ -r $PROJECT_DIR/lib/port-probe.py ]] || { fail 'Модуль сетевой проверки отсутствует.'; return 1; }
     [[ -s $PROJECT_DIR/templates/index.html ]] || { fail 'Шаблон страницы self-steal отсутствует.'; return 1; }
+    [[ -r $PROJECT_DIR/templates/robots.txt && -r $PROJECT_DIR/templates/favicon.svg ]] ||
+        { fail 'Вспомогательные файлы страницы self-steal отсутствуют.'; return 1; }
     jq -e 'type == "object" and (.version | test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))' "$PROJECT_DIR/versions.json" >/dev/null
 }
 

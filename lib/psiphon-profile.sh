@@ -20,9 +20,39 @@ psiphon_profile() {
     prefix=32
     if [[ $address == *:* ]]; then prefix=128; fi
     jq -n --arg local_ip "$address/$prefix" --argjson socks "$outbound" '
-        ["full:gemini.google.com", "full:aistudio.google.com",
-         "full:generativelanguage.googleapis.com", "full:geminiweb-pa.clients.google.com",
-         "full:geminiweb-pa.clients6.google.com", "full:gemini.gstatic.com"] as $domains
+        [
+            "geosite:google-gemini",
+            "domain:gemini.google.com",
+            "domain:aistudio.google.com",
+            "domain:generativelanguage.googleapis.com",
+            "domain:geminiweb-pa.clients.google.com",
+            "domain:geminiweb-pa.clients6.google.com",
+            "domain:gemini.gstatic.com",
+            "domain:alkalimakersuite-pa.clients6.google.com",
+            "domain:waa-pa.clients6.google.com",
+            "domain:ogads-pa.clients6.google.com",
+            "domain:push.clients6.google.com",
+            "domain:people-pa.clients6.google.com",
+            "domain:proactivebackend-pa.googleapis.com",
+            "domain:robinfrontend-pa.googleapis.com",
+            "domain:geller-pa.googleapis.com",
+            "domain:aisandbox-pa.googleapis.com",
+            "domain:daily-cloudcode-pa.googleapis.com",
+            "domain:cloudcode-pa.googleapis.com",
+            "domain:antigravity-pa.googleapis.com",
+            "domain:content-developerprofiles-pa.googleapis.com",
+            "domain:oauth2.googleapis.com",
+            "domain:play.googleapis.com",
+            "domain:www.googleapis.com",
+            "domain:antigravity.google",
+            "domain:notebooklm.google.com",
+            "domain:labs.google",
+            "domain:jules.google.com",
+            "domain:ogs.google.com",
+            "domain:one.google.com",
+            "domain:accounts.google.com",
+            "full:www.google.com"
+        ] as $domains
         | {
             outbounds: [
                 $socks,
@@ -72,9 +102,9 @@ psiphon_profile_merge() {
                     then error("Конфликт правила " + $new.ruleTag + ".")
                 elif has("localIP") then
                     if (.localIP | type) != "array" then error("Ожидался массив localIP.")
-                    else .localIP |= reduce $new.localIP[] as $ip (.; if index($ip) then . else . + [$ip] end)
+                    else .domain = $new.domain | .localIP |= reduce $new.localIP[] as $ip (.; if index($ip) then . else . + [$ip] end)
                     end
-                else . end
+                else .domain = $new.domain end
               else . end) end
           )
     '

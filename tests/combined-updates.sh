@@ -88,7 +88,10 @@ psiphon_profile '192.0.2.8' | jq -e '
     .routing.rules[0].network == "udp" and .routing.rules[0].port == "443" and
     .routing.rules[1].outboundTag == "psiphon-out" and
     all(.routing.rules[]; .localIP == ["192.0.2.8/32"] and
-        (.domain | index("full:geminiweb-pa.clients6.google.com")))
+        (.domain | index("geosite:google-gemini")) and
+        (.domain | index("domain:geminiweb-pa.clients6.google.com")) and
+        (.domain | index("domain:antigravity.google")) and
+        (.domain | index("full:www.google.com")))
 ' >/dev/null
 psiphon_profile '2001:db8::8' |
     jq -e 'all(.routing.rules[]; .localIP == ["2001:db8::8/128"])' >/dev/null
