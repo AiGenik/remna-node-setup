@@ -10,19 +10,21 @@ Psiphon даёт ноде отдельный выход через SOCKS5 на `
 
 ## Шаблон Gemini
 
-В «Порты и защита → Gemini · Шаблон для Remnawave» укажите локальный адрес VPS, на котором Xray принимает соединения. Мастер предложит IP исходящего интерфейса. Для общей конфигурации уточните адрес, если у ноды несколько IP.
+В **[2] Установка и настройка по частям → [9] Шаблон Gemini для Remnawave** (по умолчанию — **`all`**, для всех текущих и будущих нод без `localIP`) формируется готовый JSON.
 
 ```bash
-sudo remna-node-setup psiphon profile IP_НОДЫ
+sudo remna-node-setup psiphon profile
 ```
 
-В панели Remnawave откройте нужный Config Profile, например XHTTP или GRPC. Перенесите элементы `outbounds` и `routing.rules` из шаблона в существующие массивы. Правила Gemini должны стоять раньше общего правила маршрутизации. Если теги уже существуют, обновите их. При использовании одного профиля на нескольких нодах добавьте адрес новой ноды в `localIP` обоих правил.
+Если профиль нужно привязать только к одной ноде, передайте её IP (`sudo remna-node-setup psiphon profile IP_НОДЫ`).
 
-Если профиль уже настроен для других нод, сохраните его как `profile.json` на VPS и выполните команду. Мастер добавит адрес текущей ноды в оба правила Gemini с сохранением существующих адресов. Затем вставьте обновлённый JSON в редактор профиля Remnawave.
+В панели Remnawave откройте нужный Config Profile, например XHTTP или GRPC. Перенесите элементы `outbounds` и `routing.rules` из шаблона в существующие массивы. Правила должны стоять раньше общего правила маршрутизации.
+
+Если профиль уже настроен, сохраните его как `profile.json` на VPS и выполните команду — мастер обновит домены Gemini/Antigravity, добавит правило `youtube-direct` и переведёт правила в глобальный режим (для всех нод без `localIP`):
 
 ```bash
 umask 077
 sudo remna-node-setup psiphon profile-merge < profile.json > profile-new.json
 ```
 
-Шаблон отправляет TCP только к указанным хостам Gemini (`gemini.google.com`, `aistudio.google.com`, `generativelanguage.googleapis.com` и др.) через `psiphon-out` и блокирует UDP/443 к тем же хостам, чтобы клиент повторил запрос по TCP. Остальной трафик (включая YouTube) остаётся на прямом выходе ноды (`DIRECT`). `localIP` ограничивает изменения выбранной нодой. После сохранения проверьте подключение одного клиента. [Маршрутизация Xray](https://xtls.github.io/en/config/routing.html)
+Шаблон первым правилом (`youtube-direct`) отправляет YouTube (`geosite:youtube`, `youtube.com`, `googlevideo.com`, `ytimg.com`, `youtu.be`) строго напрямую (`DIRECT`), а затем отправляет TCP к хостам Gemini и Antigravity (`gemini.google.com`, `aistudio.google.com`, `generativelanguage.googleapis.com`, `antigravity.google` и др.) через `psiphon-out` и блокирует UDP/443 к тем же хостам. Без `localIP` правило работает сразу на всех текущих и новых нодах (при условии, что на каждой ноде включён `vps-psiphon` на `127.0.0.1:1080`). [Маршрутизация Xray](https://xtls.github.io/en/config/routing.html)

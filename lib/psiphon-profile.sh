@@ -1,26 +1,41 @@
 #!/usr/bin/env bash
 
 psiphon_profile() {
-    local requested=${1-} default address prefix outbound
+    local requested=${1-} default='all' address='' prefix outbound local_ip_json='null'
     outbound=$(psiphon_outbound) || return
     if [[ -z $requested ]]; then
         default=$(ip -4 route get 1.1.1.1 2>/dev/null |
             awk '{ for (i=1; i<NF; i++) if ($i == "src") { print $(i+1); exit } }') || default=
         if [[ $UI_INTERACTIVE == yes ]]; then
-            requested=$(prompt '  IP этой ноды →' "$default") || return
+            info '  Введите «all», чтобы правило работало на всех нодах (включая новые),'
+            info "  либо IP конкретной ноды${default:+ (текущий: $default)}."
+            requested=$(prompt '  Ноды для шаблона [all] →' 'all') || return
         else
-            requested=$default
+            requested=all
         fi
     fi
-    address=$(normalize_ips "$requested") || return
-    if [[ -z $address || $address == *' '* ]]; then
-        fail 'Укажите один IP ноды для правила в общем профиле.'
-        return 1
+    if [[ ${requested,,} != all ]]; then
+        address=$(normalize_ips "$requested") || return
+        if [[ -z $address || $address == *' '* ]]; then
+            fail 'Укажите «all» или один IP ноды для правила в общем профиле.'
+            return 1
+        fi
+        prefix=32
+        if [[ $address == *:* ]]; then prefix=128; fi
+        local_ip_json=$(jq -Rn --arg ip "$address/$prefix" '[$ip]')
     fi
-    prefix=32
-    if [[ $address == *:* ]]; then prefix=128; fi
-    jq -n --arg local_ip "$address/$prefix" --argjson socks "$outbound" '
+    jq -n --argjson local_ip "$local_ip_json" --argjson socks "$outbound" '
         [
+            "geosite:youtube",
+            "domain:youtube.com",
+            "domain:googlevideo.com",
+            "domain:ytimg.com",
+            "domain:youtu.be",
+            "domain:yt.be",
+            "domain:youtube-nocookie.com",
+            "domain:yt3.ggpht.com"
+        ] as $youtube_domains
+        | [
             "geosite:google-gemini",
             "domain:gemini.google.com",
             "domain:aistudio.google.com",
@@ -30,9 +45,6 @@ psiphon_profile() {
             "domain:gemini.gstatic.com",
             "domain:alkalimakersuite-pa.clients6.google.com",
             "domain:waa-pa.clients6.google.com",
-            "domain:ogads-pa.clients6.google.com",
-            "domain:push.clients6.google.com",
-            "domain:people-pa.clients6.google.com",
             "domain:proactivebackend-pa.googleapis.com",
             "domain:robinfrontend-pa.googleapis.com",
             "domain:geller-pa.googleapis.com",
@@ -41,30 +53,26 @@ psiphon_profile() {
             "domain:cloudcode-pa.googleapis.com",
             "domain:antigravity-pa.googleapis.com",
             "domain:content-developerprofiles-pa.googleapis.com",
-            "domain:oauth2.googleapis.com",
-            "domain:play.googleapis.com",
-            "domain:www.googleapis.com",
             "domain:antigravity.google",
             "domain:notebooklm.google.com",
             "domain:labs.google",
-            "domain:jules.google.com",
-            "domain:ogs.google.com",
-            "domain:one.google.com",
-            "domain:accounts.google.com",
-            "full:www.google.com"
+            "domain:jules.google.com"
         ] as $domains
+        | ({type: "field", ruleTag: "youtube-direct", domain: $youtube_domains, outboundTag: "DIRECT"}) as $yt_rule
+        | ({type: "field", ruleTag: "gemini-psiphon-block-quic", domain: $domains,
+            network: "udp", port: "443", outboundTag: "psiphon-quic-block"}
+           + (if $local_ip != null then {localIP: $local_ip} else {} end)) as $quic_rule
+        | ({type: "field", ruleTag: "gemini-psiphon-tcp", domain: $domains,
+            network: "tcp", outboundTag: $socks.tag}
+           + (if $local_ip != null then {localIP: $local_ip} else {} end)) as $tcp_rule
         | {
             outbounds: [
+                {tag: "DIRECT", protocol: "freedom"},
                 $socks,
                 {tag: "psiphon-quic-block", protocol: "blackhole"}
             ],
             routing: {
-                rules: [
-                    {type: "field", ruleTag: "gemini-psiphon-block-quic", localIP: [$local_ip],
-                     domain: $domains, network: "udp", port: "443", outboundTag: "psiphon-quic-block"},
-                    {type: "field", ruleTag: "gemini-psiphon-tcp", localIP: [$local_ip],
-                     domain: $domains, network: "tcp", outboundTag: $socks.tag}
-                ]
+                rules: [$yt_rule, $quic_rule, $tcp_rule]
             }
         }
     '
@@ -74,17 +82,24 @@ psiphon_profile_merge() {
     local fragment
     fragment=$(psiphon_profile "${1-}") || return
     jq -e --argjson fragment "$fragment" '
+        def direct_tag:
+            ([.outbounds[] | select((.tag | ascii_downcase) == "direct") | .tag] | first) // "DIRECT";
+
         def matching($new):
             .ruleTag == $new.ruleTag or
-            (.outboundTag == $new.outboundTag and .network == $new.network and
+            ($new.ruleTag != "youtube-direct" and .outboundTag == $new.outboundTag and .network == $new.network and
              ((.domain // []) | any(test("gemini|generativelanguage"; "i"))));
 
         if type != "object" or (.outbounds | type) != "array" or
             ((.routing.rules // []) | type) != "array"
         then error("Передайте JSON профиля Remnawave с массивом outbounds.") else . end
-        | reduce $fragment.outbounds[] as $new (.;
+        | direct_tag as $dtag
+        | ($fragment.outbounds | map(if .tag == "DIRECT" then .tag = $dtag else . end)) as $outbounds
+        | ($fragment.routing.rules | map(if .ruleTag == "youtube-direct" then .outboundTag = $dtag else . end)) as $rules
+        | reduce $outbounds[] as $new (.;
             ([.outbounds[] | select(.tag == $new.tag)]) as $found
             | if ($found | length) == 0 then .outbounds += [$new]
+              elif $new.tag == $dtag then .
               elif $found != [$new] and (
                 ($found | length) > 1 or $found[0].protocol != $new.protocol or
                 ($new.protocol == "socks" and
@@ -92,14 +107,16 @@ psiphon_profile_merge() {
               ) then error("Конфликт outbound " + $new.tag + ". Проверьте общий профиль.")
               else . end
           )
-        | .routing.rules = reduce ($fragment.routing.rules | reverse[]) as $new ((.routing.rules // []);
+        | .routing.rules = reduce ($rules | reverse[]) as $new ((.routing.rules // []);
             ([.[] | select(matching($new))] | length) as $count
             | if $count == 0 then [$new] + .
               elif $count > 1 then error("В профиле несколько правил " + $new.ruleTag + ".")
               else map(if matching($new) then
-                if .outboundTag != $new.outboundTag or .network != $new.network or
+                if .outboundTag != $new.outboundTag or ((.network // "") != ($new.network // "")) or
                    ($new.network == "udp" and (.port | tostring) != ($new.port | tostring))
                     then error("Конфликт правила " + $new.ruleTag + ".")
+                elif ($new | has("localIP") | not) then
+                    del(.localIP) | .domain = $new.domain
                 elif has("localIP") then
                     if (.localIP | type) != "array" then error("Ожидался массив localIP.")
                     else .domain = $new.domain | .localIP |= reduce $new.localIP[] as $ip (.; if index($ip) then . else . + [$ip] end)

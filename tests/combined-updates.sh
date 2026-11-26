@@ -84,23 +84,30 @@ psiphon_outbound() {
     printf '%s\n' '{"tag":"psiphon-out","protocol":"socks","settings":{"address":"127.0.0.1","port":1080}}'
 }
 psiphon_profile '192.0.2.8' | jq -e '
-    .outbounds[0].settings == {address:"127.0.0.1",port:1080} and
-    .routing.rules[0].network == "udp" and .routing.rules[0].port == "443" and
-    .routing.rules[1].outboundTag == "psiphon-out" and
-    all(.routing.rules[]; .localIP == ["192.0.2.8/32"] and
+    .outbounds[1].settings == {address:"127.0.0.1",port:1080} and
+    .routing.rules[0].ruleTag == "youtube-direct" and .routing.rules[0].outboundTag == "DIRECT" and
+    .routing.rules[1].network == "udp" and .routing.rules[1].port == "443" and
+    .routing.rules[2].outboundTag == "psiphon-out" and
+    all(.routing.rules[1:][]; .localIP == ["192.0.2.8/32"] and
         (.domain | index("geosite:google-gemini")) and
         (.domain | index("domain:geminiweb-pa.clients6.google.com")) and
         (.domain | index("domain:antigravity.google")) and
-        (.domain | index("full:www.google.com")))
+        ((.domain | index("full:www.google.com")) == null))
+' >/dev/null
+psiphon_profile 'all' | jq -e '
+    .routing.rules[0].ruleTag == "youtube-direct" and
+    all(.routing.rules[1:][]; (has("localIP") | not) and (.domain | index("domain:antigravity.google")))
 ' >/dev/null
 psiphon_profile '2001:db8::8' |
-    jq -e 'all(.routing.rules[]; .localIP == ["2001:db8::8/128"])' >/dev/null
+    jq -e 'all(.routing.rules[1:][]; .localIP == ["2001:db8::8/128"])' >/dev/null
 if psiphon_profile '192.0.2.8 192.0.2.9' >/dev/null 2>&1; then exit 1; fi
 original=$(psiphon_profile '192.0.2.8' | jq '.routing.rules += [{outboundTag:"direct"}]')
 merged=$(psiphon_profile_merge '192.0.2.9' <<< "$original")
-jq -e '(.outbounds | length) == 2 and .routing.rules[2].outboundTag == "direct" and
-    all(.routing.rules[:2][]; .localIP == ["192.0.2.8/32","192.0.2.9/32"])' <<< "$merged" >/dev/null
+jq -e '(.outbounds | length) == 3 and .routing.rules[3].outboundTag == "direct" and
+    all(.routing.rules[1:3][]; .localIP == ["192.0.2.8/32","192.0.2.9/32"])' <<< "$merged" >/dev/null
+merged_all=$(psiphon_profile_merge 'all' <<< "$merged")
+jq -e 'all(.routing.rules[1:3][]; has("localIP") | not)' <<< "$merged_all" >/dev/null
 [[ $(psiphon_profile_merge '192.0.2.9' <<< "$merged") == "$merged" ]]
-bad=$(jq '.outbounds[0].settings.port = 1081' <<< "$original")
+bad=$(jq '.outbounds[1].settings.port = 1081' <<< "$original")
 if psiphon_profile_merge '192.0.2.9' <<< "$bad" >/dev/null 2>&1; then exit 1; fi
 printf '%s\n' 'Проверены одно обновление сети, автоматический режим и шаблон Gemini.'
