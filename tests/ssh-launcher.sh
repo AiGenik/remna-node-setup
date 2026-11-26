@@ -32,16 +32,16 @@ STUB
 chmod +x "$fixture/bin/ssh"
 export PATH="$fixture/bin:$PATH"
 
-"$project/remna-ssh" --port 2202 root@test-vps
+"$project/remna-ssh" --port 2202 root@test-vps </dev/null
 grep -Fxq confirmed "$REMNA_TEST_TRACE"
 rm -f "$REMNA_TEST_TRACE"
 result=0
-REMNA_TEST_SSH_RESULT=255 "$project/remna-ssh" --port 2202 root@test-vps 2>"$fixture/error" || result=$?
+REMNA_TEST_SSH_RESULT=255 "$project/remna-ssh" --port 2202 root@test-vps </dev/null 2>"$fixture/error" || result=$?
 [[ $result == 255 ]]
 grep -Fq 'автооткат' "$fixture/error"
 result=0
-REMNA_TEST_TOOL_MISSING=yes "$project/remna-ssh" --port 2202 root@test-vps 2>"$fixture/error" || result=$?
+REMNA_TEST_TOOL_MISSING=yes "$project/remna-ssh" --port 2202 root@test-vps </dev/null 2>"$fixture/error" || result=$?
 [[ $result == 127 ]]
 grep -Fq 'Сначала установите мастер' "$fixture/error"
-if "$project/remna-ssh" --port 66000 root@test-vps 2>/dev/null; then exit 1; fi
+if "$project/remna-ssh" --port 66000 root@test-vps </dev/null 2>/dev/null; then exit 1; fi
 printf '%s\n' 'Локальный SSH-запуск проверен, включая отказ повторного подключения.'

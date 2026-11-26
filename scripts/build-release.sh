@@ -16,12 +16,12 @@ if [[ -n "${2:-}" && "$2" != "v$version" ]]; then
 fi
 (
     cd -- "$project_dir"
-    payload=(remna-node-setup remna-ssh install.sh versions.json lib templates)
+    payload=(remna-node-setup remna-ssh remna-ssh.ps1 install.sh versions.json lib templates)
     for optional in docs README.md LICENSE SECURITY.md; do
         [[ ! -e "$optional" ]] || payload+=("$optional")
     done
-    if ! [[ -x remna-node-setup && -x remna-ssh && -x install.sh && -s templates/index.html ]]; then
-        printf 'Для выпуска нужны исполняемые скрипты и шаблон self-steal.\n' >&2
+    if ! [[ -x remna-node-setup && -x remna-ssh && -s remna-ssh.ps1 && -x install.sh && -s templates/index.html ]]; then
+        printf 'Для выпуска нужны исполняемые скрипты, remna-ssh.ps1 и шаблон self-steal.\n' >&2
         exit 1
     fi
     if [[ -n "$(find "${payload[@]}" -type l -print -quit)" ]]; then
@@ -30,22 +30,22 @@ fi
     fi
     COPYFILE_DISABLE=1 tar --format=ustar --exclude='.obsidian' --exclude='.DS_Store' -czf "$staging/$archive" -- "${payload[@]}"
 )
-(
-    cd -- "$staging"
-    if command -v sha256sum >/dev/null; then
-        sha256sum "$archive"
-    else
-        shasum -a 256 "$archive"
-    fi
-) > "$staging/SHA256SUMS"
+emit_sha256() {
+    local dir=$1 file=$2
+    (
+        cd -- "$dir"
+        if command -v sha256sum >/dev/null; then
+            sha256sum "$file"
+        else
+            shasum -a 256 "$file"
+        fi
+    )
+}
+
+emit_sha256 "$staging" "$archive" > "$staging/SHA256SUMS"
 install -m 0755 -- "$project_dir/remna-ssh" "$staging/remna-ssh"
-(
-    cd -- "$staging"
-    if command -v sha256sum >/dev/null; then
-        sha256sum remna-ssh
-    else
-        shasum -a 256 remna-ssh
-    fi
-) > "$staging/remna-ssh.sha256"
-mv -- "$staging/$archive" "$staging/SHA256SUMS" "$staging/remna-ssh" "$staging/remna-ssh.sha256" "$output_dir/"
+install -m 0644 -- "$project_dir/remna-ssh.ps1" "$staging/remna-ssh.ps1"
+emit_sha256 "$staging" remna-ssh > "$staging/remna-ssh.sha256"
+emit_sha256 "$staging" remna-ssh.ps1 > "$staging/remna-ssh.ps1.sha256"
+mv -- "$staging/$archive" "$staging/SHA256SUMS" "$staging/remna-ssh" "$staging/remna-ssh.sha256" "$staging/remna-ssh.ps1" "$staging/remna-ssh.ps1.sha256" "$output_dir/"
 printf '%s\n' "$output_dir/$archive"

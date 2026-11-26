@@ -150,7 +150,8 @@ _ssh_interactive_setup() {
 
 run_panel_menu() {
     # SSH retains the terminal for input. Its output carries structured probe requests.
-    python3 -c "$(cat <<'PY'
+    local py_script
+    IFS= read -r -d '' py_script <<'PY' || :
 import json
 import os
 import re
@@ -380,7 +381,7 @@ finally:
         menu.terminate()
         menu.wait()
 PY
-)" "$@"
+    python3 -c "$py_script" "$@"
 }
 
 ssh_options=(-tt -o ControlMaster=no -o ControlPath=none -o ControlPersist=no

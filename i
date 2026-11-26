@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Короткая точка входа: ставит rns / remna-ssh на Mac (и запускает мастер),
+# Короткая точка входа: ставит rns / remna-ssh на Mac / Linux (и запускает мастер),
 # либо устанавливает Remna Node Setup напрямую на Ubuntu VPS (под root).
+# Для Windows PowerShell используйте i.ps1.
 REPO_URL='https://github.com/AiGenik/remna-node-setup/raw/HEAD/install.sh'
 
 _i_ensure_path() {

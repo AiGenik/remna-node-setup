@@ -25,8 +25,29 @@ jobs:
         run: ./scripts/check.sh
       - name: Check real SSH transport
         run: sudo bash tests/ssh-transport.sh
+  macos-check:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check macOS Bash 3.2 launcher and panel relay
+        run: |
+          bash -n i remna-ssh install.sh
+          bash tests/ssh-launcher.sh </dev/null
+          python3 tests/panel-launcher.py
+  windows-check:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check Windows PowerShell client launcher
+        run: python tests/windows-launcher.py
   publish:
-    needs: check
+    needs: [check, macos-check, windows-check]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -39,4 +60,4 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/remna-node-setup.tar.gz dist/SHA256SUMS dist/remna-ssh dist/remna-ssh.sha256 --verify-tag --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" dist/remna-node-setup.tar.gz dist/SHA256SUMS dist/remna-ssh dist/remna-ssh.sha256 dist/remna-ssh.ps1 dist/remna-ssh.ps1.sha256 --verify-tag --generate-notes
