@@ -9,7 +9,10 @@ source "$PROJECT_DIR/lib/security.sh"
 
 log=$(mktemp)
 STATE_DIR=$(mktemp -d)
+UFW_CONF_FILE="$STATE_DIR/ufw.conf"
+TIMESYNCD_CONF_DIR="$STATE_DIR/timesyncd.conf.d"
 trap 'rm -rf -- "$log" "$STATE_DIR"' EXIT
+printf 'ENABLED=yes\n' > "$UFW_CONF_FILE"
 
 SSH_PORT=2202
 NODE_PORT=3003
@@ -173,7 +176,6 @@ MOCK_UPDATES_STATE=1
 MOCK_APT_UPGRADE_TIMER=no
 [[ $(security_os_updates_status 2>&1) == *'не подтверждены'* ]]
 
-UFW_CONF_FILE="$STATE_DIR/ufw.conf"
 printf 'ENABLED=no\n' > "$UFW_CONF_FILE"
 MOCK_UFW_BOOT=enabled
 if security_ufw_boot_verified >/dev/null 2>&1; then exit 1; fi
@@ -193,7 +195,6 @@ security_repair_boot >/dev/null
 grep -Fqx 'ENABLED=yes' "$UFW_CONF_FILE"
 security_ufw_boot_verified
 
-TIMESYNCD_CONF_DIR="$STATE_DIR/timesyncd.conf.d"
 timedatectl() {
     case "$*" in
         *'NTPSynchronized'*) printf 'no\n' ;;

@@ -17,6 +17,7 @@ fixture=$(mktemp -d)
 trap 'rm -rf -- "$fixture"' EXIT
 STATE_DIR="$fixture/state"
 BACKUP_DIR="$fixture/backups"
+export UFW_CONF_FILE="$fixture/ufw.conf"
 mkdir -p -- "$STATE_DIR/traffic-guard" "$BACKUP_DIR"
 printf '0.0.5\n' > "$STATE_DIR/traffic-guard/version"
 
