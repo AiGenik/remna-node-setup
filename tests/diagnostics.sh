@@ -57,4 +57,39 @@ if doctor >/dev/null; then exit 1; fi
 [[ $(backup_scope) == 'config selfsteal' ]]
 ENABLE_TRAFFIC_GUARD=yes
 [[ $(backup_scope) == 'config network selfsteal' ]]
-printf '%s\n' 'Проверены диагностика DNS, Certbot, TrafficGuard и состав снимка.'
+
+# shellcheck source=lib/updates.sh
+source "$PROJECT_DIR/lib/updates.sh"
+ui_section() { printf '%s\n' "$1"; }
+NODE_DIR="$fixture/node"
+mkdir -p -- "$NODE_DIR" "$STATE_DIR/nginx-certbot/config/renewal"
+_updates_github_tag() { printf 'v9.9.9\n'; }
+_node_latest_tag() { printf 'v3.9.0\n'; }
+apt_installed_version() { return 1; }
+timedatectl() { printf 'yes\n'; }
+versions_out=$(show_versions)
+grep -Fq 'remna-node-setup' <<< "$versions_out"
+grep -Fq 'Remnawave Node / Xray' <<< "$versions_out"
+
+dns=yes
+fail2ban-client() {
+    case "$*" in
+        'status sshd') return 0 ;;
+        'get sshd banaction') printf 'iptables-multiport[blocktype=DROP]\n' ;;
+        *) return 1 ;;
+    esac
+}
+certbot() { return 0; }
+ss() { printf 'LISTEN 0 128 127.0.0.1:1080 0.0.0.0:*\n'; }
+curl() {
+    case "$*" in
+        *api.ipify.org*) printf '198.51.100.77\n' ;;
+        *) printf '200\n' ;;
+    esac
+}
+audit_out=$(audit_live)
+grep -Fq 'Certbot dry-run' <<< "$audit_out"
+grep -Fq '198.51.100.77' <<< "$audit_out"
+grep -Fq 'YouTube прямой выход' <<< "$audit_out"
+
+printf '%s\n' 'Проверены диагностика DNS, Certbot, TrafficGuard, аудит, версии и состав снимка.'

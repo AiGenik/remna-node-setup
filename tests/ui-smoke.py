@@ -58,6 +58,9 @@ _psiphon_install() {
     printf 'TEST-PSIPHON\n'
     [[ ${FAIL_PSIPHON:-no} != yes ]]
 }
+ipv6_apply() { :; }
+auto_update_configure() { printf 'TEST-AUTO-UPDATE\n'; }
+auto_update_enabled() { return 1; }
 prepare_security() { [[ $EXPECTED_MODE == full ]]; }
 security_apply_current() { [[ $EXPECTED_MODE == full ]]; }
 selfsteal_apply() { [[ $EXPECTED_MODE == full ]]; }
@@ -85,6 +88,8 @@ dispatch() {
         install) install_wizard "${2-}" ;;
         preflight) standalone_port_preflight ;;
         status) printf 'TEST-NODE-STATUS\n' ;;
+        versions) printf 'TEST-VERSIONS\n' ;;
+        audit) printf 'TEST-AUDIT\n' ;;
         update) [[ $2 == tool ]] ;;
     esac
 }
@@ -175,21 +180,21 @@ def without_ansi(screen):
 
 with Terminal() as terminal:
     screen = without_ansi(terminal.expect("Номер пункта →"))
-    assert "●─[◆]─●  REMNA NODE SETUP" in screen
-    assert "УСТАНОВКА" in screen and "УПРАВЛЕНИЕ" in screen
-    assert "[1] Только нода" in screen and "[2] Нода и компоненты · Gemini" in screen
+    assert "REMNA NODE SETUP" in screen and "◉" in screen
+    assert "УСТАНОВКА И НАСТРОЙКА" in screen and "ПРОВЕРКА И СЕТЬ" in screen
+    assert "[ 1] Всё под ключ" in screen and "[ 2] Установка и настройка по частям" in screen
     assert "Docker и подключение к панели" not in screen
-    terminal.enter("4")
+    terminal.enter("3")
     screen = terminal.expect("Номер пункта →")
-    assert CLEAR in screen and "Диагностика".encode() in screen.split(CLEAR)[-1]
-    assert "УПРАВЛЕНИЕ".encode() not in screen.split(CLEAR)[-1]
+    assert CLEAR in screen and "Проверка и аудит работы ноды".encode() in screen.split(CLEAR)[-1]
+    assert "ОБСЛУЖИВАНИЕ".encode() not in screen.split(CLEAR)[-1]
     terminal.enter("1")
     assert "TEST-NODE-STATUS".encode() in terminal.expect("Enter — вернуться в меню")
     terminal.enter()
     terminal.expect("Номер пункта →")
     terminal.enter("0")
     terminal.expect("Номер пункта →")
-    terminal.enter("2")
+    terminal.enter("1")
     screen = terminal.expect("NODE_PORT из панели →")
     assert CLEAR in screen and "из Compose".encode() in screen
     assert "Адрес ноды →".encode() not in screen and "Домен self-steal →".encode() not in screen
@@ -206,27 +211,31 @@ with Terminal() as terminal:
     screen = terminal.expect(f"Введено {len(compose)} симв.")
     assert KEY_MARKER.encode() not in screen
     terminal.enter()
-    terminal.expect("Self-steal для REALITY? [Y/n]")
+    terminal.expect("Self-steal для REALITY (Nginx + Certbot)? [Y/n]")
     terminal.enter()
     terminal.expect("Домен self-steal →")
     terminal.enter("https://node.example.com")
     assert "Введите поддомен".encode() in terminal.expect("Домен self-steal →")
     terminal.enter("node.example.com")
     terminal.expect("Веб-сервер → [1]")
-    terminal.enter("2")
-    terminal.expect("Включить BBR? [Y/n]")
+    terminal.enter()
+    terminal.expect("Включить BBR и fq? [Y/n]")
     terminal.enter("д")
     terminal.expect("Введите y или n.")
-    terminal.expect("Включить BBR? [Y/n]")
+    terminal.expect("Включить BBR и fq? [Y/n]")
     terminal.enter("n")
-    terminal.expect("Включить TrafficGuard? [y/N]")
+    terminal.expect("Отключить IPv6 на сервере? [Y/n]")
     terminal.enter("n")
-    terminal.expect("Настроить Gemini через Psiphon? [y/N]")
+    terminal.expect("Включить TrafficGuard (против сканеров)? [Y/n]")
+    terminal.enter("n")
+    terminal.expect("Настроить Gemini через Psiphon? [Y/n]")
     terminal.enter("y")
     terminal.expect("Регион Psiphon (auto, DE, NL, US) → [auto]")
     terminal.enter("nl")
     terminal.expect("Локальный порт SOCKS5 → [1080]")
     terminal.enter("1081")
+    terminal.expect("Включить ночные автообновления (04:00)? [Y/n]")
+    terminal.enter("n")
     terminal.expect("Порт SSH → [2202]")
     terminal.enter()
     assert "сервере панели".encode() in terminal.expect("IP панели →")
@@ -238,7 +247,7 @@ with Terminal() as terminal:
     assert "3333/tcp · панель → нода" in screen and "9443/tcp · VPN" in screen
     assert "С компьютера · remna-ssh --panel" in screen
     terminal.enter()
-    screen = terminal.expect("Начать установку? [y/N]")
+    screen = terminal.expect("Начать установку? [Y/n]")
     assert KEY_MARKER.encode() not in screen
     assert b"3333" in screen and b"nginx" in screen and b"9443/tcp 2443/udp" in screen
     assert b"Psiphon (NL)" in screen and b"127.0.0.1:1081" in screen
@@ -250,18 +259,18 @@ with Terminal() as terminal:
     assert "›  Docker и образ ноды" in progress and "○  Контейнер Remnawave" in progress
     finished = without_ansi(screen.split(CLEAR)[-1])
     assert finished.count("✓") == 6 and "Установка завершена" in finished
-    assert "Откройте [3] → [6]" in finished and "Сеть ждёт подтверждения SSH" in finished
+    assert "Откройте [2] → [9]" in finished and "Сеть ждёт подтверждения SSH" in finished
     terminal.enter()
     terminal.expect("Номер пункта →")
     terminal.enter("0")
     assert terminal.process.wait(timeout=5) == 0
 
-base_inputs = ["NODE_PORT=3333", TEST_KEY, "n", "n", "n"]
+base_inputs = ["NODE_PORT=3333", TEST_KEY, "n", "n", "n", "n"]
 network_inputs = ["", "192.0.2.25", "9443/tcp 2443/udp", "y", ""]
 plain = subprocess.run(
     ["bash", "-c", FIXTURE, "ui-test", "install_wizard"],
-    cwd=ROOT, env={**ENV, "EXPECTED_WEBSERVER": "caddy", "EXPECTED_MODE": "full"},
-    input="\n".join([*base_inputs, "n", *network_inputs]), capture_output=True, text=True, check=True,
+    cwd=ROOT, env={**ENV, "EXPECTED_WEBSERVER": "nginx", "EXPECTED_MODE": "full"},
+    input="\n".join([*base_inputs, "n", "n", *network_inputs]), capture_output=True, text=True, check=True,
 )
 assert "TEST-APPLIED" in plain.stdout
 assert "[1/4] Docker и образ ноды" in plain.stdout and "[4/4] Контейнер Remnawave" in plain.stdout
@@ -272,8 +281,8 @@ assert TEST_KEY not in plain.stdout + plain.stderr
 
 preflight_failed = subprocess.run(
     ["bash", "-c", FIXTURE, "ui-test", "install_wizard"],
-    cwd=ROOT, env={**ENV, "EXPECTED_WEBSERVER": "caddy", "EXPECTED_MODE": "full", "FAIL_PREFLIGHT": "yes"},
-    input="\n".join([*base_inputs, "n", *network_inputs]), capture_output=True, text=True,
+    cwd=ROOT, env={**ENV, "EXPECTED_WEBSERVER": "nginx", "EXPECTED_MODE": "full", "FAIL_PREFLIGHT": "yes"},
+    input="\n".join([*base_inputs, "n", "n", *network_inputs]), capture_output=True, text=True,
 )
 assert preflight_failed.returncode == 1
 assert "Порт 2443/udp занят" in preflight_failed.stderr
@@ -281,8 +290,8 @@ assert "TEST-APPLIED" not in preflight_failed.stdout and "Начать уста�
 
 psiphon_failed = subprocess.run(
     ["bash", "-c", FIXTURE, "ui-test", "install_wizard"],
-    cwd=ROOT, env={**ENV, "EXPECTED_WEBSERVER": "caddy", "EXPECTED_MODE": "full", "FAIL_PSIPHON": "yes"},
-    input="\n".join([*base_inputs, "y", "NL", "1081", *network_inputs]),
+    cwd=ROOT, env={**ENV, "EXPECTED_WEBSERVER": "nginx", "EXPECTED_MODE": "full", "FAIL_PSIPHON": "yes"},
+    input="\n".join([*base_inputs, "y", "NL", "1081", "n", *network_inputs]),
     capture_output=True, text=True,
 )
 assert psiphon_failed.returncode == 1
@@ -291,7 +300,9 @@ assert "Повторите настройку Gemini" in psiphon_failed.stderr
 assert "Сеть ждёт подтверждения SSH" in psiphon_failed.stdout
 
 def accept_minimal_install(terminal):
-    assert "Только нода".encode() in terminal.expect("Номер пункта →")
+    terminal.expect("Номер пункта →")
+    terminal.enter("2")
+    assert "Установить только ноду".encode() in terminal.expect("Номер пункта →")
     terminal.enter("1")
     screen = terminal.expect("NODE_PORT из панели →")
     assert "Адрес ноды →".encode() not in screen
@@ -301,7 +312,7 @@ def accept_minimal_install(terminal):
     terminal.type_text(TEST_KEY)
     terminal.expect(f"Введено {len(TEST_KEY)} симв.")
     terminal.enter()
-    screen = terminal.expect("Начать установку? [y/N]")
+    screen = terminal.expect("Начать установку? [Y/n]")
     assert b"UFW" not in screen and b"Fail2Ban" not in screen and b"Gemini" not in screen
     terminal.enter("y")
 
@@ -315,7 +326,7 @@ with Terminal("node-only") as terminal:
     assert b"UFW" not in screen and b"Fail2Ban" not in screen and KEY_MARKER.encode() not in screen
     terminal.enter()
     terminal.expect("Номер пункта →")
-    terminal.enter("0")
+    terminal.enter("q")
     assert terminal.process.wait(timeout=5) == 0
 
 with Terminal("node-only", fail_image=True) as terminal:
@@ -325,22 +336,22 @@ with Terminal("node-only", fail_image=True) as terminal:
     assert "TEST-IMAGE-FAILED" in screen and "Установка завершена" not in screen
     terminal.enter()
     terminal.expect("Номер пункта →")
-    terminal.enter("0")
+    terminal.enter("q")
     assert terminal.process.wait(timeout=5) == 0
 
 with Terminal(rows=18, columns=42, pending=True) as terminal:
     screen = terminal.expect("Номер пункта →")
     assert "\x1b[1;91m● Сеть ждёт подтверждения SSH".encode() in screen
     visible = without_ansi(screen)
-    assert "[1] Только нода" in visible and "[7] Где взять данные для установки" in visible
+    assert "[ 1] Всё под ключ" in visible and "[ 7] Где взять данные" in visible
     assert "sudo remna-node-setup confirm" in visible and "Автооткат через 2 мин 3 с." in visible
     assert len(visible.splitlines()) <= 18
     assert all(len(line) < 42 for line in visible.splitlines())
     for key, label in (
-        ("3", "[2] Входящие порты и защита SSH"),
-        ("4", "[2] Проверка портов и сервисов"),
-        ("5", "[5] Обновить TrafficGuard"),
-        ("6", "[3] Подтвердить сетевые настройки"),
+        ("2", "[ 2] Self-steal"),
+        ("3", "[ 3] Живой тест"),
+        ("5", "[ 5] Обновить TrafficGuard"),
+        ("6", "[ 3] Подтвердить сетевые настройки"),
     ):
         terminal.enter(key)
         visible = without_ansi(terminal.expect("Номер пункта →").split(CLEAR)[-1])
@@ -370,19 +381,17 @@ with Terminal(pending=True, no_color=True) as terminal:
 
 with Terminal(rows=18, columns=32) as terminal:
     screen = without_ansi(terminal.expect("Номер пункта →"))
-    assert "REMNA NODE SETUP" in screen and "[7] Где взять данные" in screen
+    assert "REMNA NODE SETUP" in screen and "[ 7] Где взять данные" in screen
     assert all(len(line) < 32 for line in screen.splitlines())
-    terminal.enter("4")
+    terminal.enter("2")
     screen = without_ansi(terminal.expect("Номер пункта →").split(CLEAR)[-1])
-    assert "[5] Проверить связь" in screen and all(len(line) < 32 for line in screen.splitlines())
+    assert "[10] Восстановить" in screen and all(len(line) < 32 for line in screen.splitlines())
     terminal.enter("q")
     assert terminal.process.wait(timeout=5) == 0
 
 with Terminal() as terminal:
     terminal.expect("Номер пункта →")
     terminal.enter("4")
-    assert "Проверить связь до установки".encode() in terminal.expect("Номер пункта →")
-    terminal.enter("5")
     terminal.expect("Node Port из карточки ноды → [2222]")
     terminal.enter()
     terminal.expect("Порты VPN (TCP/UDP) → [443/tcp 9443/tcp]")
@@ -400,8 +409,13 @@ with Terminal() as terminal:
 with Terminal() as terminal:
     terminal.expect("Номер пункта →")
     terminal.enter("5")
-    terminal.expect("Номер пункта →")
+    screen = terminal.expect("Номер пункта →")
+    assert "Актуальные версии".encode() in screen
     terminal.enter("1")
+    assert "TEST-VERSIONS".encode() in terminal.expect("Enter — вернуться в меню")
+    terminal.enter()
+    terminal.expect("Номер пункта →")
+    terminal.enter("7")
     terminal.expect("TEST-REOPENED")
     assert terminal.process.wait(timeout=5) == 0
 

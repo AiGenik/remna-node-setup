@@ -162,3 +162,94 @@ update_all() {
     fi
     apply_combined_updates "$mode" "$result"
 }
+
+_updates_github_tag() {
+    local repo=$1 metadata
+    metadata=$(curl -fsSL --proto '=https' --connect-timeout 6 --max-time 12 \
+        "https://api.github.com/repos/$repo/releases/latest" 2>/dev/null) || return 1
+    jq -er '.tag_name | strings' <<< "$metadata" 2>/dev/null
+}
+
+_updates_print_row() {
+    local component=$1 current=${2:--} latest=${3:--} status
+    if [[ $current == '-' || $current == 'не установлен' ]]; then
+        status='—'
+    elif [[ $latest == '-' || $latest == 'недоступно' ]]; then
+        status='онлайн недоступно'
+    elif [[ ${current#v} == "${latest#v}" ]]; then
+        status='✓ актуален'
+    else
+        status='↑ есть обновление'
+    fi
+    printf '  %-24s %-16s %-16s %s\n' "$component" "$current" "$latest" "$status"
+}
+
+show_versions() {
+    local tool_cur tool_lat repo='AiGenik/remna-node-setup'
+    local node_cur='не установлен' node_lat='недоступно' node_img
+    local tg_cur='не установлен' tg_lat='недоступно'
+    local psi_cur='не установлен' psi_lat='недоступно' psi_marker
+    local pkg pkg_cur pkg_lat
+
+    if [[ -n ${CONFIG_DIR:-} && -s $CONFIG_DIR/release-repository ]]; then
+        repo=$(< "$CONFIG_DIR/release-repository")
+    fi
+    tool_cur=$(version_get version 2>/dev/null || printf 'неизвестно')
+    tool_lat=$(_updates_github_tag "$repo" 2>/dev/null || printf 'недоступно')
+
+    if [[ -n ${NODE_DIR:-} && -f $NODE_DIR/compose.yaml ]]; then
+        node_img=$(jq -er '.services.remnanode.image // empty' "$NODE_DIR/compose.yaml" 2>/dev/null || :)
+        node_cur=$(_node_pinned_image_version "$node_img" 2>/dev/null || :)
+        if [[ -z $node_cur ]]; then
+            node_cur=${node_img##*:}
+            node_cur=${node_cur%%@*}
+            node_cur=${node_cur#v}
+        fi
+        [[ -n $node_cur ]] || node_cur='установлен'
+    fi
+    if declare -F _node_latest_tag >/dev/null; then
+        node_lat=$(_node_latest_tag 2>/dev/null || printf 'недоступно')
+        node_lat=${node_lat#v}
+    fi
+
+    if [[ -s $STATE_DIR/traffic-guard/version ]]; then
+        tg_cur=$(< "$STATE_DIR/traffic-guard/version")
+    fi
+    tg_lat=$(_updates_github_tag 'dotX12/traffic-guard' 2>/dev/null || printf 'недоступно')
+    tg_lat=${tg_lat#v}
+
+    if psi_marker=$(_psiphon_marker 2>/dev/null) && [[ -s $psi_marker ]]; then
+        psi_cur=$(jq -r '.version // "установлен"' "$psi_marker" 2>/dev/null || printf 'установлен')
+    elif systemctl is-active --quiet vps-psiphon.service 2>/dev/null; then
+        psi_cur='сторонний'
+    fi
+    if declare -F psiphon_latest_version >/dev/null; then
+        psi_lat=$(psiphon_latest_version 2>/dev/null || printf 'недоступно')
+    fi
+
+    ui_section 'Версии компонентов (установлено / онлайн)'
+    printf '  %-24s %-16s %-16s %s\n' 'Компонент' 'Установлено' 'Актуально' 'Статус'
+    printf '  %-24s %-16s %-16s %s\n' '────────────────────────' '────────────────' '────────────────' '───────────────'
+    _updates_print_row 'remna-node-setup' "${tool_cur#v}" "${tool_lat#v}"
+    _updates_print_row 'Remnawave Node / Xray' "$node_cur" "$node_lat"
+    _updates_print_row 'TrafficGuard' "$tg_cur" "$tg_lat"
+    _updates_print_row 'Psiphon (vps-psiphon)' "$psi_cur" "$psi_lat"
+    for pkg in nginx certbot ufw fail2ban docker-ce; do
+        pkg_cur=$(apt_installed_version "$pkg" 2>/dev/null || :)
+        [[ -n $pkg_cur ]] || continue
+        pkg_lat=$(LC_ALL=C apt-cache policy "$pkg" 2>/dev/null | awk '$1 == "Candidate:" {print $2; exit}') || pkg_lat='-'
+        pkg_cur=${pkg_cur%%+*}
+        pkg_cur=${pkg_cur#*:}
+        pkg_lat=${pkg_lat%%+*}
+        pkg_lat=${pkg_lat#*:}
+        _updates_print_row "$pkg" "${pkg_cur:0:15}" "${pkg_lat:0:15}"
+    done
+    if command -v timedatectl >/dev/null 2>&1; then
+        printf '\n'
+        if [[ $(timedatectl show -p NTPSynchronized --value 2>/dev/null || :) == yes ]]; then
+            info 'Синхронизация времени NTP · активна.'
+        else
+            warn 'Синхронизация времени NTP · не подтверждена.'
+        fi
+    fi
+}

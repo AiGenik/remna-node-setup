@@ -63,7 +63,9 @@ Remna Node Setup
   remna-node-setup bbr                 Включить BBR и fq
   remna-node-setup ipv6 [disable|enable|status]  Отключить или включить IPv6
   remna-node-setup status              Статус
-  remna-node-setup doctor              Диагностика
+  remna-node-setup doctor              Диагностика настроек и сервисов
+  remna-node-setup audit               Полный аудит (Gemini, YouTube, Certbot dry-run)
+  remna-node-setup versions            Таблица установленных и свежих версий
   remna-node-setup preflight           Проверить порты и связь с панели до установки
   remna-node-setup dns [домен]         Проверить A/AAAA и IP этого VPS
   remna-node-setup logs                Последние сообщения ноды
@@ -97,7 +99,7 @@ self_test() {
         load_host_settings standalone_selfsteal standalone_security standalone_bbr standalone_ipv6 standalone_traffic_guard \
         configure_ipv6 auto_update_enabled psiphon_configure psiphon_is_managed psiphon_select_settings \
         psiphon_apply_settings psiphon_profile psiphon_profile_merge psiphon_outbound \
-        vpn_port_wizard update_all standalone_port_preflight; do
+        vpn_port_wizard update_all show_versions audit_live standalone_port_preflight; do
         declare -F "$name" >/dev/null || { fail "Не загружен модуль $name."; return 1; }
     done
     [[ -r $PROJECT_DIR/lib/secret-input.py ]] || { fail 'Модуль ввода ключа отсутствует.'; return 1; }

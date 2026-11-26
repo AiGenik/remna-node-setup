@@ -104,4 +104,55 @@ _node_docker() { printf '{"noticeType":"Tunnels","data":{"count":1}}\n'; }
 printf 'EGRESS_REGION=bad\n' > "$_psiphon_environment"
 if _psiphon_env_region 2>/dev/null; then exit 1; fi
 
+curl() {
+    case "$*" in
+        *'/releases/latest'*)
+            printf '{"tag_name":"%s"}\n' "$mock_tag"
+            ;;
+        *'/git/ref/tags/'*)
+            printf '{"object":{"type":"commit","sha":"%s"}}\n' "$mock_commit"
+            ;;
+        *"/$mock_commit/psiphon_install.sh"*)
+            while (( $# > 1 )); do
+                if [[ $1 == --output ]]; then cp -- "$mock_script" "$2"; return 0; fi
+                shift
+            done
+            return 1
+            ;;
+        *)
+            while (( $# > 1 )); do
+                if [[ $1 == --output ]]; then cp -- "$fixture/upstream.sh" "$2"; return 0; fi
+                shift
+            done
+            return 1
+            ;;
+    esac
+}
+mock_tag=v1.4
+mock_commit=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+mock_script="$fixture/v14.sh"
+cat > "$mock_script" <<'V14_MOCK'
+IMAGE=swarupsengupta2007/psiphon@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+rm -f "$cfg.new"
+  setline DisableTactics true
+exec docker run \
+  "${PUB[@]}" \
+  "$IMAGE"
+/usr/local/sbin/$P status
+V14_MOCK
+stage_v14=$(mktemp -d "$fixture/s1.XXXXXX")
+resolved=$(_psiphon_prepare_source "$stage_v14")
+[[ $resolved == $'1.4\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\tswarupsengupta2007/psiphon@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' ]]
+
+mock_tag=v1.5
+mock_commit=cccccccccccccccccccccccccccccccccccccccc
+mock_script="$fixture/v15-broken.sh"
+printf '# broken upstream missing markers\n' > "$mock_script"
+stage_v15=$(mktemp -d "$fixture/s2.XXXXXX")
+cp -- "$fixture/v14.sh" "$fixture/upstream.sh"
+test_hash=$(sha256sum < "$fixture/upstream.sh")
+PSIPHON_INSTALLER_SHA256=${test_hash%% *}
+resolved=$(_psiphon_prepare_source "$stage_v15" 2>/dev/null)
+[[ $resolved == "$PSIPHON_UPSTREAM_VERSION"$'\t'"$PSIPHON_UPSTREAM_COMMIT"$'\t'"$PSIPHON_IMAGE" ]]
+
 printf '%s\n' 'psiphon-smoke OK'

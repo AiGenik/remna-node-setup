@@ -10,13 +10,15 @@ ui_init() {
     UI_WARN=
     UI_DANGER=
     UI_RESET=
-    UI_LOGO='o-[+]-o'
+    UI_LOGO='[o]'
+    UI_EYE_FRAME='╭─[  ◉  ]─╮'
+    UI_INTRO_SHOWN=no
     UI_VERSION=$(version_get version) || return
     if [[ -t 0 && -t 1 && -t 2 ]]; then
         UI_INTERACTIVE=yes
         if [[ -n ${TERM:-} && $TERM != dumb ]]; then
             UI_CLEAR=yes
-            UI_LOGO='●─[◆]─●'
+            UI_LOGO='╭─[ ◉ ]─╮'
             UI_BOLD=$'\033[1m'
             UI_RESET=$'\033[0m'
             if [[ -z ${NO_COLOR+x} ]]; then
@@ -49,23 +51,34 @@ ui_fit() {
     printf '%s' "$value"
 }
 
-ui_screen() {
-    local title=$1 parent=${2-} line brand
-    ui_layout
-    if [[ $UI_CLEAR == yes ]]; then
-        # Redraw the viewport and leave the SSH terminal's scrollback intact.
-        printf '\033[H\033[2J'
+_ui_render_header_box() {
+    local eye=$1 title=$2 parent=${3-} line inner_width title_text padding left_pad
+    if [[ $UI_CLEAR == yes && $UI_COMPACT != yes ]] && (( UI_RULE_WIDTH >= 42 )); then
+        inner_width=$((UI_RULE_WIDTH - 2))
+        printf -v line '%*s' "$inner_width" ''
+        title_text="REMNA NODE SETUP"
+        padding=$((inner_width - ${#eye} - ${#title_text} - ${#UI_VERSION} - 5))
+        if (( padding < 1 )); then padding=1; fi
+        printf -v left_pad '%*s' "$padding" ''
+        printf '  %s╭%s╮%s\n' "$UI_MUTED" "${line// /─}" "$UI_RESET"
+        printf '  %s│%s %s%s%s  %s%s%s%s%sv%s%s %s│%s\n' \
+            "$UI_MUTED" "$UI_RESET" \
+            "${UI_ACCENT:-$UI_BOLD}" "$eye" "$UI_RESET" \
+            "$UI_BOLD" "$title_text" "$UI_RESET" "$left_pad" \
+            "$UI_MUTED" "$UI_VERSION" "$UI_RESET" \
+            "$UI_MUTED" "$UI_RESET"
+        printf '  %s╰%s╯%s\n' "$UI_MUTED" "${line// /─}" "$UI_RESET"
     else
-        printf '\n'
-    fi
-    brand="$UI_LOGO  REMNA NODE SETUP"
-    if (( ${#brand} + ${#UI_VERSION} + 6 > UI_COLUMNS )); then brand='REMNA NODE SETUP'; fi
-    brand=$(ui_fit "$brand" "$((UI_COLUMNS - ${#UI_VERSION} - 6))")
-    printf '  %s%s%s  %sv%s%s\n' \
-        "${UI_ACCENT:-$UI_BOLD}" "$brand" "$UI_RESET" "$UI_MUTED" "$UI_VERSION" "$UI_RESET"
-    if (( UI_RULE_WIDTH >= 10 )); then
-        printf -v line '%*s' "$UI_RULE_WIDTH" ''
-        printf '  %s%s%s\n' "$UI_MUTED" "${line// /─}" "$UI_RESET"
+        local brand
+        brand="$UI_LOGO  REMNA NODE SETUP"
+        if (( ${#brand} + ${#UI_VERSION} + 6 > UI_COLUMNS )); then brand='REMNA NODE SETUP'; fi
+        brand=$(ui_fit "$brand" "$((UI_COLUMNS - ${#UI_VERSION} - 6))")
+        printf '  %s%s%s  %sv%s%s\n' \
+            "${UI_ACCENT:-$UI_BOLD}" "$brand" "$UI_RESET" "$UI_MUTED" "$UI_VERSION" "$UI_RESET"
+        if (( UI_RULE_WIDTH >= 10 )); then
+            printf -v line '%*s' "$UI_RULE_WIDTH" ''
+            printf '  %s%s%s\n' "$UI_MUTED" "${line// /─}" "$UI_RESET"
+        fi
     fi
     if [[ -n $title ]]; then
         if [[ -n $parent ]] && (( ${#parent} + ${#title} + 3 <= UI_RULE_WIDTH )); then
@@ -74,6 +87,31 @@ ui_screen() {
             printf '  %s%s%s\n\n' "$UI_BOLD" "$(ui_fit "$title" "$((UI_COLUMNS - 3))")" "$UI_RESET"
         fi
     fi
+}
+
+_ui_eye_intro() {
+    local frame
+    if [[ $UI_CLEAR != yes || $UI_COMPACT == yes || $UI_INTRO_SHOWN == yes || ${UI_NO_ANIMATION:-no} == yes ]]; then
+        return 0
+    fi
+    UI_INTRO_SHOWN=yes
+    for frame in '╭─[ ◉   ]─╮' '╭─[   ◉ ]─╮' '╭─[ ─── ]─╮' '╭─[  ◉  ]─╮'; do
+        printf '\033[H'
+        _ui_render_header_box "$frame" '' ''
+        sleep 0.09
+    done
+}
+
+ui_screen() {
+    local title=${1-} parent=${2-}
+    ui_layout
+    if [[ $UI_CLEAR == yes ]]; then
+        # Redraw the viewport and leave the SSH terminal's scrollback intact.
+        printf '\033[H\033[2J'
+    else
+        printf '\n'
+    fi
+    _ui_render_header_box "$UI_EYE_FRAME" "$title" "$parent"
 }
 
 ui_section() {
@@ -191,7 +229,7 @@ ui_install_phase() {
 }
 
 ui_menu_status() (
-    local page=$1 configured='Нода ещё не настроена' address mark='○'
+    local page=$1 configured='Нода ещё не настроена' address mark='○' color=$UI_MUTED badges=''
     if [[ -s ${PENDING_FILE:-} ]]; then
         ui_network_confirmation menu
         printf '\n'
@@ -199,21 +237,35 @@ ui_menu_status() (
         if load_config 2>/dev/null; then
             configured='Настройки ноды сохранены'
             mark='●'
+            color=${UI_OK:-$UI_BOLD}
             if valid_port "$NODE_PORT"; then
                 address="$NODE_PORT/tcp"
                 if [[ -n $NODE_DOMAIN ]]; then address="$NODE_DOMAIN · $address"; fi
                 if (( ${#address} + 11 <= UI_RULE_WIDTH )); then configured="Нода · $address"; fi
             fi
+            if [[ $UI_COMPACT != yes ]]; then
+                if [[ ${ENABLE_SECURITY:-no} == yes ]]; then badges+='UFW '; else badges+='UFW(выкл) '; fi
+                if [[ ${ENABLE_TRAFFIC_GUARD:-no} == yes ]]; then badges+='· TG '; fi
+                if declare -F psiphon_is_managed >/dev/null && psiphon_is_managed; then
+                    badges+='· Psiphon '
+                fi
+                if [[ ${DISABLE_IPV6:-no} == yes ]]; then badges+='· IPv4-only'; fi
+            fi
         elif [[ -s ${CONFIG_DIR:-/etc/remna-node-setup}/host.json ]]; then
             configured='Компоненты настроены · ноды пока нет'
         fi
-        printf '  %s%s  %s%s\n\n' "$UI_MUTED" "$mark" "$configured" "$UI_RESET"
+        printf '  %s%s%s  %s%s%s\n' "$color" "$mark" "$UI_RESET" "$UI_BOLD" "$configured" "$UI_RESET"
+        if [[ -n $badges ]]; then
+            printf '     %s%s%s\n\n' "$UI_MUTED" "$(ui_fit "$badges" "$((UI_COLUMNS - 6))")" "$UI_RESET"
+        else
+            printf '\n'
+        fi
     fi
 )
 
 ui_menu_key() {
-    printf '  %s[%s]%s %s%s%s\n' "${UI_ACCENT:-$UI_BOLD}" "$1" "$UI_RESET" "$UI_BOLD" \
-        "$(ui_fit "$2" "$((UI_COLUMNS - 7))")" "$UI_RESET"
+    printf '  %s[%2s]%s %s%s%s\n' "${UI_ACCENT:-$UI_BOLD}" "$1" "$UI_RESET" "$UI_BOLD" \
+        "$(ui_fit "$2" "$((UI_COLUMNS - 8))")" "$UI_RESET"
 }
 
 ui_preparation() {
@@ -235,17 +287,17 @@ ui_preparation() {
 select_selfsteal_server() {
     local current=$1 requested=${2:-} choice default=1
     case "$requested" in
-        caddy|nginx) printf '%s\n' "$requested"; return 0 ;;
+        nginx|caddy) printf '%s\n' "$requested"; return 0 ;;
         '') ;;
-        *) fail 'Укажите caddy или nginx.'; return 1 ;;
+        *) fail 'Укажите nginx или caddy.'; return 1 ;;
     esac
-    if [[ $UI_INTERACTIVE != yes ]]; then printf '%s\n' "$current"; return 0; fi
-    if [[ $current == nginx ]]; then default=2; fi
-    printf '    1  Caddy  — автоматический HTTPS\n    2  Nginx  — сертификат через Certbot\n' >&2
+    if [[ $UI_INTERACTIVE != yes ]]; then printf '%s\n' "${current:-nginx}"; return 0; fi
+    if [[ $current == caddy ]]; then default=2; fi
+    printf '    1  Nginx  — сертификат Certbot + изоляция IP (рекомендуется)\n    2  Caddy  — автоматический HTTPS\n' >&2
     while choice=$(prompt '  Веб-сервер →' "$default"); do
         case "$choice" in
-            1) printf 'caddy\n'; return 0 ;;
-            2) printf 'nginx\n'; return 0 ;;
+            1) printf 'nginx\n'; return 0 ;;
+            2) printf 'caddy\n'; return 0 ;;
             *) warn 'Выберите 1 или 2.' ;;
         esac
     done
@@ -253,38 +305,41 @@ select_selfsteal_server() {
 }
 
 MENU_ACTIONS=(
-    'main|1|Только нода|install node-only'
-    'main|2|Нода и компоненты · Gemini|install'
-    'main|3|Порты и защита|@components'
-    'main|4|Диагностика|@diagnostics'
-    'main|5|Обновления|@updates'
-    'main|6|Снимки и восстановление|@recovery'
+    'main|1|Всё под ключ · полная установка ноды|install'
+    'main|2|Установка и настройка по частям|@components'
+    'main|3|Проверка и аудит работы ноды|@diagnostics'
+    'main|4|Проверка связи от панели к ноде|preflight'
+    'main|5|Обновления и актуальные версии|@updates'
+    'main|6|Снимки, подтверждение SSH и откат|@recovery'
     'main|7|Где взять данные для установки|guide'
-    'components|1|Self-steal · Caddy или Nginx|selfsteal'
-    'components|2|Входящие порты и защита SSH|security'
-    'components|3|Настроить TCP (BBR и fq)|bbr'
-    'components|4|TrafficGuard против сканеров|update traffic-guard'
-    'components|5|Gemini · Настроить Psiphon|psiphon'
-    'components|6|Gemini · Шаблон для Remnawave|psiphon profile'
-    'components|7|Сменить порт VPN|vpn-port'
-    'components|8|Восстановить автозапуск защиты|security boot'
-    'components|9|Отключить или включить IPv6|ipv6'
+    'components|1|Установить только ноду (без защиты)|install node-only'
+    'components|2|Self-steal · Nginx или Caddy (HTTPS)|selfsteal'
+    'components|3|Порты, UFW и защита SSH (Fail2Ban)|security'
+    'components|4|Сменить порт VPN (например 443)|vpn-port'
+    'components|5|Ускорение TCP (BBR и очередь fq)|bbr'
+    'components|6|Отключить или включить IPv6|ipv6'
+    'components|7|TrafficGuard (защита от сканеров)|update traffic-guard'
+    'components|8|Psiphon для Gemini (локальный SOCKS5)|psiphon'
+    'components|9|Шаблон Gemini для Remnawave (профиль)|psiphon profile'
+    'components|10|Восстановить автозапуск защиты (UFW/TG)|security boot'
     'diagnostics|1|Статус ноды и компонентов|status'
-    'diagnostics|2|Проверка портов и сервисов|doctor'
-    'diagnostics|3|Логи ноды|logs'
+    'diagnostics|2|Проверка портов, служб и автозапуска|doctor'
+    'diagnostics|3|Живой тест: Gemini, YouTube и Certbot|audit'
     'diagnostics|4|Проверить DNS домена|dns'
-    'diagnostics|5|Проверить связь до установки|preflight'
-    'recovery|1|Сохранить снимок|backup'
+    'diagnostics|5|Логи ноды|logs'
+    'recovery|1|Сохранить снимок настроек|backup'
     'recovery|2|Восстановить снимок|restore'
-    'recovery|3|Подтвердить сетевые настройки|confirm'
+    'recovery|3|Подтвердить сетевые настройки (SSH)|confirm'
     'recovery|4|Откатить сетевые изменения|rollback'
-    'updates|1|Обновить скрипт|update tool'
-    'updates|2|Обновить ноду|update node'
-    'updates|3|Откатить версию скрипта|rollback tool'
-    'updates|4|Обновить системные пакеты|update packages'
-    'updates|5|Обновить TrafficGuard|update traffic-guard'
-    'updates|6|Обновить всё|update all'
-    'updates|7|Автообновления|auto-updates'
+    'updates|1|Актуальные версии (установлено / онлайн)|versions'
+    'updates|2|Обновить всё (скрипт + нода + базы + пакеты)|update all'
+    'updates|3|Обновить ноду Remnawave (Xray/VLESS)|update node'
+    'updates|4|Обновить Psiphon (vps-psiphon)|update psiphon'
+    'updates|5|Обновить TrafficGuard и список сканеров|update traffic-guard'
+    'updates|6|Обновить системные пакеты (Nginx, Certbot...)|update packages'
+    'updates|7|Обновить скрипт (remna-node-setup)|update tool'
+    'updates|8|Откатить версию скрипта|rollback tool'
+    'updates|9|Ночные автообновления (04:00)|auto-updates'
 )
 
 ui_restart_menu() {
@@ -312,16 +367,17 @@ show_menu() {
     while true; do
         case "$page" in
             main) title='Главное меню' ;;
-            components) title='Порты и защита' ;;
-            diagnostics) title='Диагностика' ;;
-            recovery) title='Снимки и восстановление' ;;
-            updates) title='Обновления' ;;
+            components) title='Установка и настройка по частям' ;;
+            diagnostics) title='Проверка и аудит работы ноды' ;;
+            recovery) title='Снимки, подтверждение и откат' ;;
+            updates) title='Обновления и актуальные версии' ;;
         esac
         parent=
         heading=$title
         if [[ $page == main ]]; then heading=; fi
         if [[ $page != main ]]; then parent='Меню'; fi
         ui_screen "$heading" "$parent"
+        if [[ $page == main ]]; then _ui_eye_intro; fi
         ui_menu_status "$page"
 
         local -A labels=() actions=()
@@ -332,10 +388,16 @@ show_menu() {
             actions[$index]=$action
             if [[ $page == main ]]; then
                 case "$index" in
-                    1) printf '  %sУСТАНОВКА%s\n' "$UI_BOLD" "$UI_RESET" ;;
+                    1) printf '  %sУСТАНОВКА И НАСТРОЙКА%s\n' "$UI_BOLD" "$UI_RESET" ;;
                     3)
-                        if [[ $UI_COMPACT != yes ]]; then printf '\n'; fi
-                        printf '  %sУПРАВЛЕНИЕ%s\n' "$UI_BOLD" "$UI_RESET"
+                        if [[ $UI_COMPACT != yes ]]; then
+                            printf '\n  %sПРОВЕРКА И СЕТЬ%s\n' "$UI_BOLD" "$UI_RESET"
+                        fi
+                        ;;
+                    5)
+                        if [[ $UI_COMPACT != yes ]]; then
+                            printf '\n  %sОБСЛУЖИВАНИЕ%s\n' "$UI_BOLD" "$UI_RESET"
+                        fi
                         ;;
                 esac
             fi
@@ -360,7 +422,7 @@ show_menu() {
             page=main
             continue
         fi
-        if [[ ! $choice =~ ^[1-9]$ ]] || [[ -z ${actions[$choice]+x} ]]; then
+        if [[ ! $choice =~ ^[1-9][0-9]*$ ]] || [[ -z ${actions[$choice]+x} ]]; then
             notice='Выберите номер из списка.'
             notice_color=${UI_WARN:-$UI_BOLD}
             continue

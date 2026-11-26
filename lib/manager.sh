@@ -140,7 +140,7 @@ apply_installation() {
             ui_install_phase bbr_apply || return
         fi
         if [[ ${DISABLE_IPV6:-no} == yes ]]; then
-            ipv6_apply yes || return
+            ui_install_phase ipv6_apply yes || return
         fi
         if [[ $ENABLE_TRAFFIC_GUARD == yes ]]; then
             ui_install_phase traffic_guard_apply "$traffic_stage" || return
@@ -197,8 +197,10 @@ wizard_selfsteal_preflight() {
 install_wizard() {
     local mode=${1:-full} scope='config node' consent detected_port result=0
     local steps=3 components='Docker, Remnawave Node'
-    local old_port='' had_selfsteal=no has_node=no image vps_ips selfsteal_domain=''
-    local gemini=no gemini_default=n PSIPHON_REGION PSIPHON_PORT
+    local old_port='' had_selfsteal=no has_node=no has_host=no image vps_ips selfsteal_domain=''
+    local gemini=no gemini_default=yes auto_updates=no auto_default=yes ipv6_default=yes
+    local selfsteal_default=yes bbr_default=yes tg_default=yes
+    local PSIPHON_REGION PSIPHON_PORT
     # shellcheck disable=SC2034 # The progress renderer reads the current wizard title.
     local UI_INSTALL_TITLE='Установка ноды'
     local UI_PROGRESS_DONE=0
@@ -206,7 +208,7 @@ install_wizard() {
     if [[ $mode == full ]]; then
         steps=6
         scope+=' network'
-        UI_INSTALL_TITLE='Установка ноды и компонентов'
+        UI_INSTALL_TITLE='Полная установка ноды (всё под ключ)'
     fi
     release_wait_for_apt || return
     ui_run 'Подготовка VPS' apt_install_missing ca-certificates curl python3 iproute2 || return
@@ -219,6 +221,10 @@ install_wizard() {
         return 1
     else
         _standalone_load || return
+        if [[ -e $CONFIG_DIR/host.json ]]; then has_host=yes; fi
+    fi
+    if [[ $has_node == no && $has_host == no ]]; then
+        SELFSTEAL_SERVER=nginx
     fi
     had_selfsteal=$ENABLE_SELFSTEAL
 
@@ -229,7 +235,7 @@ install_wizard() {
     info '  Скопируйте Node Port из Compose.'
     NODE_PORT=$(wizard_input 'NODE_PORT из панели' "${old_port:-2222}" check_node_port) || return
     if [[ $mode == node-only && $ENABLE_SECURITY == yes && $has_node == yes && $NODE_PORT != "$old_port" ]]; then
-        fail 'Чтобы сменить служебный порт в управляемом UFW, откройте «Нода и компоненты».'
+        fail 'Чтобы сменить служебный порт в управляемом UFW, перенастройте ноду через полное меню.'
         return 1
     fi
 
@@ -238,25 +244,28 @@ install_wizard() {
     ask_secret || return
 
     if [[ $mode == full ]]; then
-        ui_step 3 'Дополнительные компоненты' "$steps"
-        if [[ $ENABLE_SELFSTEAL == no ]]; then
-            ENABLE_SELFSTEAL=$(yes_no '  Self-steal для REALITY?' y) || return
+        ui_step 3 'Профиль «Всё под ключ»' "$steps"
+        if [[ $has_node == yes || $has_host == yes ]]; then
+            selfsteal_default=$ENABLE_SELFSTEAL
+            bbr_default=$ENABLE_BBR
+            tg_default=$ENABLE_TRAFFIC_GUARD
+            ipv6_default=${DISABLE_IPV6:-yes}
+            if ! psiphon_is_managed; then gemini_default=n; fi
+            if declare -F auto_update_enabled >/dev/null && ! auto_update_enabled; then auto_default=n; fi
         fi
+        ENABLE_SELFSTEAL=$(yes_no '  Self-steal для REALITY (Nginx + Certbot)?' "$([[ $selfsteal_default == yes ]] && printf y || printf n)") || return
         if [[ $ENABLE_SELFSTEAL == yes ]]; then
             if valid_domain "$NODE_DOMAIN"; then selfsteal_domain=$NODE_DOMAIN; fi
             info '  Для HTTPS укажите домен, направленный на этот VPS.'
             NODE_DOMAIN=$(wizard_input 'Домен self-steal' "$selfsteal_domain" check_node_domain) || return
             SELFSTEAL_SERVER=$(select_selfsteal_server "$SELFSTEAL_SERVER") || return
         fi
-        if [[ $ENABLE_BBR == no ]]; then
-            ENABLE_BBR=$(yes_no '  Включить BBR?' y) || return
-        fi
-        if [[ $ENABLE_TRAFFIC_GUARD == no ]]; then
-            ENABLE_TRAFFIC_GUARD=$(yes_no '  Включить TrafficGuard?' n) || return
-        fi
-        if psiphon_is_managed; then gemini_default=y; fi
-        gemini=$(yes_no '  Настроить Gemini через Psiphon?' "$gemini_default") || return
+        ENABLE_BBR=$(yes_no '  Включить BBR и fq?' "$([[ $bbr_default == yes ]] && printf y || printf n)") || return
+        DISABLE_IPV6=$(yes_no '  Отключить IPv6 на сервере?' "$([[ $ipv6_default == yes ]] && printf y || printf n)") || return
+        ENABLE_TRAFFIC_GUARD=$(yes_no '  Включить TrafficGuard (против сканеров)?' "$([[ $tg_default == yes ]] && printf y || printf n)") || return
+        gemini=$(yes_no '  Настроить Gemini через Psiphon?' "$([[ $gemini_default == yes ]] && printf y || printf n)") || return
         if [[ $gemini == yes ]]; then psiphon_select_settings || return; fi
+        auto_updates=$(yes_no '  Включить ночные автообновления (04:00)?' "$([[ $auto_default == yes ]] && printf y || printf n)") || return
 
         ui_step 4 'Порты и защита' "$steps"
         if [[ $ENABLE_SECURITY == no && -z $VPN_PORTS ]]; then
@@ -296,11 +305,23 @@ install_wizard() {
             components+=', BBR + fq'
             UI_INSTALL_PHASES+=('Настройка BBR и fq')
         fi
+        if [[ $DISABLE_IPV6 == yes ]]; then
+            scope+=' ipv6'
+            components+=', IPv6 выкл'
+            UI_INSTALL_PHASES+=('Отключение IPv6')
+        fi
         if [[ $ENABLE_TRAFFIC_GUARD == yes ]]; then
             components+=', TrafficGuard'
             UI_INSTALL_PHASES+=('Применение базы TrafficGuard')
         fi
-        if [[ $gemini == yes ]]; then UI_INSTALL_PHASES+=('Gemini через Psiphon'); fi
+        if [[ $gemini == yes ]]; then
+            components+=', Psiphon (Gemini)'
+            UI_INSTALL_PHASES+=('Gemini через Psiphon')
+        fi
+        if [[ $auto_updates == yes ]]; then
+            components+=', автообновления'
+            UI_INSTALL_PHASES+=('Ночные автообновления')
+        fi
     else
         UI_INSTALL_PHASES+=('Контейнер Remnawave')
     fi
@@ -321,7 +342,8 @@ install_wizard() {
         info "  IP панели  $PANEL_IPS"
         info "  SSH        $SSH_PORT/tcp"
         info "  VPN        ${VPN_PORTS:-будут настроены позже}"
-        if [[ $ENABLE_SELFSTEAL == yes ]]; then info '  ACME       80/tcp'; fi
+        info "  IPv6       $([[ $DISABLE_IPV6 == yes ]] && printf 'отключён' || printf 'включён')"
+        if [[ $ENABLE_SELFSTEAL == yes ]]; then info '  ACME       80/tcp (webroot)'; fi
         if [[ $gemini == yes ]]; then
             info "  Gemini     Psiphon (${PSIPHON_REGION:-auto}) · 127.0.0.1:$PSIPHON_PORT"
         fi
@@ -330,21 +352,30 @@ install_wizard() {
     fi
     info "  Установка  $components"
     printf '\n'
-    consent=$(yes_no '  Начать установку?' n) || return
+    consent=$(yes_no '  Начать установку?' y) || return
     [[ $consent == yes ]] || { info 'Установка отменена.'; return 0; }
     if [[ $UI_CLEAR == yes ]]; then ui_install_progress "$UI_PROGRESS_DONE"; else ui_screen "$UI_INSTALL_TITLE"; fi
     image=$(node_release_image) || return
     ui_install_phase node_prepare_image "$image" || return
     if [[ $mode == full ]]; then ui_install_phase prepare_security || return; fi
     apply_selected_installation "$scope" "$mode" "$image" || return
+    if [[ $gemini == yes || $auto_updates == yes ]]; then
+        local tail_phases=0
+        if [[ $gemini == yes ]]; then tail_phases=$((tail_phases + 1)); fi
+        if [[ $auto_updates == yes ]]; then tail_phases=$((tail_phases + 1)); fi
+        # apply_selected_installation updates UI_PROGRESS_DONE inside a subshell.
+        UI_PROGRESS_DONE=$((${#UI_INSTALL_PHASES[@]} - tail_phases))
+    fi
     if [[ $gemini == yes ]]; then
-        # The loopback service has its own rollback and runs after the network worker commits.
-        UI_PROGRESS_DONE=$((${#UI_INSTALL_PHASES[@]} - 1))
         if ! ui_install_phase psiphon_apply_settings "$PSIPHON_REGION" "$PSIPHON_PORT"; then
-            warn 'Нода настроена. Повторите настройку Gemini в меню [3] → [5] после подтверждения SSH.'
+            warn 'Нода настроена. Повторите настройку Gemini в [2] → [8] после подтверждения SSH.'
             if [[ $UI_CLEAR == yes ]]; then ui_network_confirmation; fi
             return 1
         fi
+        ui_install_progress "$UI_PROGRESS_DONE"
+    fi
+    if [[ $auto_updates == yes ]] && declare -F auto_update_configure >/dev/null; then
+        ui_install_phase auto_update_configure enable || warn 'Не удалось включить автообновления; повторите в [5] → [9].'
         ui_install_progress "$UI_PROGRESS_DONE"
     fi
     printf '\n'
@@ -354,7 +385,7 @@ install_wizard() {
     if [[ $gemini == yes ]]; then
         printf '\n'
         ui_section 'Gemini через Psiphon'
-        info '  Откройте [3] → [6] и добавьте шаблон в профиль ноды в Remnawave.'
+        info '  Откройте [2] → [9] и добавьте шаблон в профиль ноды в Remnawave.'
         if [[ $UI_CLEAR == yes ]]; then
             printf '\n'
             ui_network_confirmation
@@ -703,6 +734,69 @@ doctor() {
     return "$result"
 }
 
+audit_live() {
+    local result=0 port=1080 marker ban_action gemini_code gemini_ip yt_code cert_dir
+    ui_section 'Базовая проверка ноды и сервисов'
+    doctor || result=1
+    printf '\n'
+    ui_section 'Живой аудит сети, маршрутов и сертификата'
+
+    if command -v fail2ban-client >/dev/null 2>&1 && fail2ban-client status sshd >/dev/null 2>&1; then
+        ban_action=$(fail2ban-client get sshd banaction 2>/dev/null || :)
+        info "Fail2Ban sshd · активен (${ban_action:-настроен})."
+    fi
+
+    if [[ -r /proc/sys/net/ipv6/conf/all/disable_ipv6 && $(< /proc/sys/net/ipv6/conf/all/disable_ipv6) == 1 ]]; then
+        info 'IPv6 · отключён (трафик идёт стабильно по IPv4).'
+    else
+        warn 'IPv6 · не отключён (при желании отключите в [2] → [6]).'
+    fi
+
+    if [[ ${ENABLE_SELFSTEAL:-no} == yes && ${SELFSTEAL_SERVER:-} == nginx ]] && command -v certbot >/dev/null 2>&1; then
+        cert_dir="$STATE_DIR/nginx-certbot"
+        if [[ -d $cert_dir/config/renewal ]]; then
+            if certbot --config-dir "$cert_dir/config" --work-dir "$cert_dir/work" --logs-dir "$cert_dir/logs" \
+                renew --dry-run --no-random-sleep-on-renew >/dev/null 2>&1; then
+                info 'Certbot dry-run · автопродление сертификата проходит без конфликта с Nginx.'
+            else
+                warn 'Certbot dry-run · ошибка тестового продления (проверьте 80/tcp и DNS).'
+                result=1
+            fi
+        fi
+    fi
+
+    if psiphon_is_managed; then
+        marker=$(_psiphon_marker 2>/dev/null || :)
+        if [[ -s $marker ]]; then port=$(jq -r '.port // 1080' "$marker" 2>/dev/null || printf '1080'); fi
+    fi
+    if ss -H -ltn "sport = :$port" 2>/dev/null | grep -q "127.0.0.1:$port"; then
+        gemini_code=$(curl --socks5-hostname "127.0.0.1:$port" -sS -o /dev/null -w '%{http_code}' \
+            --connect-timeout 6 --max-time 12 'https://gemini.google.com/' 2>/dev/null || printf '000')
+        gemini_ip=$(curl --socks5-hostname "127.0.0.1:$port" -sS --connect-timeout 6 --max-time 10 \
+            'https://api.ipify.org' 2>/dev/null || :)
+        if [[ $gemini_code =~ ^(200|301|302)$ ]]; then
+            info "Psiphon (127.0.0.1:$port) → Gemini HTTP $gemini_code${gemini_ip:+ · egress IP $gemini_ip}."
+        else
+            warn "Psiphon (127.0.0.1:$port) → Gemini ответил HTTP $gemini_code."
+            result=1
+        fi
+    else
+        info 'Psiphon · не запущен на 127.0.0.1:1080 (пропуск теста Gemini).'
+    fi
+
+    if command -v curl >/dev/null 2>&1; then
+        yt_code=$(curl -4 -sS -o /dev/null -w '%{http_code}' --connect-timeout 6 --max-time 10 \
+            'https://www.youtube.com/' 2>/dev/null || printf '000')
+        if [[ $yt_code =~ ^(200|301|302)$ ]]; then
+            info "YouTube прямой выход (IPv4) → HTTP $yt_code."
+        else
+            warn "YouTube прямой выход (IPv4) → HTTP $yt_code."
+            result=1
+        fi
+    fi
+    return "$result"
+}
+
 check_dns() {
     local domain=$1
     if [[ -z $domain ]]; then
@@ -720,6 +814,8 @@ dispatch() (
     case "$action" in
         status) [[ $# == 1 ]] || return 2; status_all; return ;;
         doctor) [[ $# == 1 ]] || return 2; doctor; return ;;
+        audit) [[ $# == 1 ]] || return 2; audit_live; return ;;
+        versions) [[ $# == 1 ]] || return 2; show_versions; return ;;
         dns) [[ $# -le 2 ]] || return 2; check_dns "$target"; return ;;
         logs) [[ $# == 1 ]] || return 2; node_logs; return ;;
         vpn-port)

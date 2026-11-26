@@ -35,7 +35,7 @@ psiphon_is_managed() {
         .schema == 1 and .upstream == "Chara-Freedom/vps-psiphon" and
         (.commit | test("^[a-f0-9]{40}$")) and
         (.version | test("^[0-9]+\\.[0-9]+(\\.[0-9]+)?$")) and
-        (.image | test("^swarupsengupta2007/psiphon@sha256:[a-f0-9]{64}$")) and
+        (.image | test("^swarupsengupta2007/psiphon(@sha256:[a-f0-9]{64}|:[A-Za-z0-9._-]+)?$")) and
         (.region | test("^(|[A-Z]{2})$")) and
         (.port | type == "number" and . >= 1 and . <= 65535 and . == floor)
     ' "$file" >/dev/null 2>&1
@@ -170,6 +170,69 @@ psiphon_outbound() {
     }'
 }
 
+_psiphon_latest_release() {
+    local metadata
+    metadata=$(curl -fsSL --proto '=https' --connect-timeout 6 --max-time 15 \
+        'https://api.github.com/repos/Chara-Freedom/vps-psiphon/releases/latest' 2>/dev/null) || return 1
+    jq -er '.tag_name | strings | select(test("^v?(0|[1-9][0-9]*)\\.[0-9]+(\\.[0-9]+)?$"))' <<< "$metadata"
+}
+
+_psiphon_tag_commit() {
+    local tag=$1 ref_json object_type object_sha
+    ref_json=$(curl -fsSL --proto '=https' --connect-timeout 6 --max-time 15 \
+        "https://api.github.com/repos/Chara-Freedom/vps-psiphon/git/ref/tags/$tag" 2>/dev/null) || return 1
+    object_type=$(jq -er '.object.type' <<< "$ref_json") || return 1
+    object_sha=$(jq -er '.object.sha | strings | select(test("^[a-f0-9]{40}$"))' <<< "$ref_json") || return 1
+    if [[ $object_type == tag ]]; then
+        ref_json=$(curl -fsSL --proto '=https' --connect-timeout 6 --max-time 15 \
+            "https://api.github.com/repos/Chara-Freedom/vps-psiphon/git/tags/$object_sha" 2>/dev/null) || return 1
+        object_sha=$(jq -er '.object.sha | strings | select(test("^[a-f0-9]{40}$"))' <<< "$ref_json") || return 1
+    fi
+    printf '%s\n' "$object_sha"
+}
+
+_psiphon_installer_image() {
+    local image
+    image=$(sed -nE 's/^IMAGE="\$\{IMAGE:-([^"}]+)\}"$/\1/p; s/^IMAGE=([^[:space:]]+)$/\1/p' "$1" | head -n 1)
+    image=${image%\"}
+    image=${image#\"}
+    [[ $image =~ ^swarupsengupta2007/psiphon(@sha256:[a-f0-9]{64}|:[A-Za-z0-9._-]+)?$ ]] || return 1
+    printf '%s\n' "$image"
+}
+
+_psiphon_prepare_source() {
+    local stage=$1 tag commit upstream_image adapted_version adapted_commit adapted_image
+    if tag=$(_psiphon_latest_release) && commit=$(_psiphon_tag_commit "$tag"); then
+        if curl -q --proto '=https' --fail --silent --show-error --connect-timeout 8 --max-time 25 \
+            --max-filesize 262144 --output "$stage/upstream.sh" \
+            "https://raw.githubusercontent.com/Chara-Freedom/vps-psiphon/$commit/psiphon_install.sh" &&
+           bash -n "$stage/upstream.sh" 2>/dev/null &&
+           _psiphon_adapt_installer "$stage/upstream.sh" "$stage/install.sh" 2>/dev/null &&
+           bash -n "$stage/install.sh" 2>/dev/null; then
+            upstream_image=$(_psiphon_installer_image "$stage/upstream.sh" 2>/dev/null || :)
+            adapted_version=${tag#v}
+            adapted_commit=$commit
+            adapted_image=${upstream_image:-$PSIPHON_IMAGE}
+            printf '%s\t%s\t%s\n' "$adapted_version" "$adapted_commit" "$adapted_image"
+            return 0
+        fi
+        warn "Свежий выпуск vps-psiphon ($tag) не прошёл проверку патчей безопасности; используется проверенная версия $PSIPHON_UPSTREAM_VERSION."
+    fi
+    _psiphon_download_installer "$stage/upstream.sh" || return 1
+    _psiphon_adapt_installer "$stage/upstream.sh" "$stage/install.sh" || return 1
+    bash -n "$stage/install.sh" || return 1
+    printf '%s\t%s\t%s\n' "$PSIPHON_UPSTREAM_VERSION" "$PSIPHON_UPSTREAM_COMMIT" "$PSIPHON_IMAGE"
+}
+
+psiphon_latest_version() {
+    local tag
+    if tag=$(_psiphon_latest_release); then
+        printf '%s\n' "${tag#v}"
+    else
+        printf '%s\n' "$PSIPHON_UPSTREAM_VERSION"
+    fi
+}
+
 _psiphon_download_installer() {
     local destination=$1 checksum
     curl -q --proto '=https' --fail --silent --show-error --connect-timeout 8 --max-time 25 \
@@ -244,6 +307,7 @@ _psiphon_finish_install() {
 
 _psiphon_install() (
     local region=$1 port=$2 old_active old_enabled managed=no stage path listeners touched=no
+    local resolved target_version=$PSIPHON_UPSTREAM_VERSION target_commit=$PSIPHON_UPSTREAM_COMMIT target_image=$PSIPHON_IMAGE
     _psiphon_docker_ready || return 1
     for path in "/etc/systemd/system/$_psiphon_service.d" "/etc/systemd/system/$_psiphon_timer.d"; do
         if [[ -e $path || -L $path ]]; then
@@ -279,23 +343,22 @@ _psiphon_install() (
     trap 'exit 143' TERM
     trap 'exit 129' HUP
 
-    _psiphon_download_installer "$stage/upstream.sh" || return 1
-    _psiphon_adapt_installer "$stage/upstream.sh" "$stage/install.sh" || return 1
-    bash -n "$stage/install.sh" || return 1
+    resolved=$(_psiphon_prepare_source "$stage") || return 1
+    IFS=$'\t' read -r target_version target_commit target_image <<< "$resolved"
     path_snapshot "$stage" "${_psiphon_install_paths[@]}" || return 1
     touched=yes
-    info "Настраивается Psiphon $PSIPHON_UPSTREAM_VERSION. Ожидание туннеля может занять до двух минут."
+    info "Настраивается Psiphon $target_version. Ожидание туннеля может занять до двух минут."
     if ! env -u DOCKER_HOST -u DOCKER_CONTEXT -u BASH_ENV -u ENV -u NAME -u HTTP_PORT -u DEVICE_REGION \
         bash "$stage/install.sh" --region "$region" --socks-port "$port" --bind-loopback \
-        --no-watchdog --no-impersonate --no-http --tunnel-pool 1 --image "$PSIPHON_IMAGE" \
+        --no-watchdog --no-impersonate --no-http --tunnel-pool 1 --image "$target_image" \
         > "$stage/install.log" 2>&1; then
         tail -n 10 -- "$stage/install.log" >&2
         return 1
     fi
-    _psiphon_verify "$region" "$port" "$PSIPHON_IMAGE" ||
+    _psiphon_verify "$region" "$port" "$target_image" ||
         { fail 'Не удалось подтвердить безопасную конфигурацию SOCKS5 Psiphon.'; return 1; }
-    jq -n --arg version "$PSIPHON_UPSTREAM_VERSION" --arg commit "$PSIPHON_UPSTREAM_COMMIT" \
-        --arg image "$PSIPHON_IMAGE" --arg region "$region" --argjson port "$port" '{
+    jq -n --arg version "$target_version" --arg commit "$target_commit" \
+        --arg image "$target_image" --arg region "$region" --argjson port "$port" '{
         schema: 1, upstream: "Chara-Freedom/vps-psiphon", version: $version, commit: $commit,
         image: $image, region: $region, port: $port
     }' > "$stage/marker.json" || return 1
@@ -345,7 +408,7 @@ psiphon_configure() {
 }
 
 psiphon_update() {
-    local marker region port image commit version
+    local marker region port image commit version latest latest_commit=''
     if ! psiphon_is_managed; then return 0; fi
     if [[ $(active "$_psiphon_service") != yes || $(enabled "$_psiphon_service") != yes ]]; then
         info 'Psiphon остановлен или выключен из автозагрузки. Обновление пропущено.'
@@ -357,8 +420,21 @@ psiphon_update() {
     image=$(jq -r '.image' "$marker") || return 1
     commit=$(jq -r '.commit' "$marker") || return 1
     version=$(jq -r '.version' "$marker") || return 1
+    if latest=$(_psiphon_latest_release 2>/dev/null) && latest_commit=$(_psiphon_tag_commit "$latest" 2>/dev/null); then
+        latest=${latest#v}
+        if [[ $commit == "$latest_commit" ]] && _psiphon_verify "$region" "$port" "$image"; then
+            info "Управляемый Psiphon $version уже актуален."
+            return 0
+        fi
+        if dpkg --compare-versions "$latest" ge "$version"; then
+            _psiphon_install "$region" "$port" || return 1
+            version=$(jq -r '.version' "$marker") || version=$latest
+            info "Psiphon обновлён до выпуска $version."
+            return 0
+        fi
+    fi
     if dpkg --compare-versions "$PSIPHON_UPSTREAM_VERSION" lt "$version"; then
-        info "Установленный Psiphon $version новее проверенной версии инструмента. Обновление пропущено."
+        info "Установленный Psiphon $version уже актуален или новее встроенной версии."
         return 0
     fi
     if [[ $commit == "$PSIPHON_UPSTREAM_COMMIT" && $image == "$PSIPHON_IMAGE" ]] &&
