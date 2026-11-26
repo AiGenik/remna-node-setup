@@ -87,9 +87,23 @@ curl() {
         *) printf '200\n' ;;
     esac
 }
+export PSIPHON_GEMINI_CHECK_BIN="$fixture/mock-gemini-check"
+cat > "$PSIPHON_GEMINI_CHECK_BIN" <<'GEM'
+#!/usr/bin/env bash
+printf '%s\n' 'ok — Gemini replies, and places this exit in Canada'
+GEM
+chmod +x "$PSIPHON_GEMINI_CHECK_BIN"
 audit_out=$(audit_live)
 grep -Fq 'Certbot dry-run' <<< "$audit_out"
 grep -Fq '198.51.100.77' <<< "$audit_out"
+grep -Fq 'сообщение отправлено и ответ получен' <<< "$audit_out"
 grep -Fq 'YouTube прямой выход' <<< "$audit_out"
+
+cat > "$PSIPHON_GEMINI_CHECK_BIN" <<'GEM'
+#!/usr/bin/env bash
+printf '%s\n' 'CAPTCHA — Google sends a browser on this exit to /sorry'
+exit 3
+GEM
+if audit_live >/dev/null 2>&1; then exit 1; fi
 
 printf '%s\n' 'Проверены диагностика DNS, Certbot, TrafficGuard, аудит, версии и состав снимка.'

@@ -353,13 +353,19 @@ _psiphon_install() (
     IFS=$'\t' read -r target_version target_commit target_image <<< "$resolved"
     path_snapshot "$stage" "${_psiphon_install_paths[@]}" || return 1
     touched=yes
-    info "Настраивается Psiphon $target_version (автосмена региона включена, 0 ГБ фонового трафика). Ожидание туннеля до 2 минут."
+    info "Настраивается Psiphon $target_version (автосмена региона + проверка браузером, 0 ГБ фонового трафика). Ожидание туннеля до 2 минут."
     if ! env -u DOCKER_HOST -u DOCKER_CONTEXT -u BASH_ENV -u ENV -u NAME -u HTTP_PORT -u DEVICE_REGION \
         bash "$stage/install.sh" --region "$region" --socks-port "$port" --bind-loopback \
-        --bulk-test-mb 0 --no-impersonate --no-http --tunnel-pool 1 --image "$target_image" \
+        --bulk-test-mb 0 --impersonate --no-http --tunnel-pool 1 --image "$target_image" \
         > "$stage/install.log" 2>&1; then
-        tail -n 10 -- "$stage/install.log" >&2
-        return 1
+        warn 'Не удалось загрузить curl-impersonate для браузерной проверки капчи; повторяю установку без него.'
+        if ! env -u DOCKER_HOST -u DOCKER_CONTEXT -u BASH_ENV -u ENV -u NAME -u HTTP_PORT -u DEVICE_REGION \
+            bash "$stage/install.sh" --region "$region" --socks-port "$port" --bind-loopback \
+            --bulk-test-mb 0 --no-impersonate --no-http --tunnel-pool 1 --image "$target_image" \
+            > "$stage/install.log" 2>&1; then
+            tail -n 10 -- "$stage/install.log" >&2
+            return 1
+        fi
     fi
     if [[ -f $_psiphon_environment && ! -L $_psiphon_environment ]]; then
         sed -i -E \

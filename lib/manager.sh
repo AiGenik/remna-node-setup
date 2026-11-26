@@ -770,15 +770,41 @@ audit_live() {
         if [[ -s $marker ]]; then port=$(jq -r '.port // 1080' "$marker" 2>/dev/null || printf '1080'); fi
     fi
     if ss -H -ltn "sport = :$port" 2>/dev/null | grep -q "127.0.0.1:$port"; then
-        gemini_code=$(curl --socks5-hostname "127.0.0.1:$port" -sS -o /dev/null -w '%{http_code}' \
-            --connect-timeout 6 --max-time 12 'https://gemini.google.com/' 2>/dev/null || printf '000')
+        local gemini_check=${PSIPHON_GEMINI_CHECK_BIN:-/usr/local/sbin/vps-psiphon-gemini-check} gem_out='' gem_rc=0
         gemini_ip=$(curl --socks5-hostname "127.0.0.1:$port" -sS --connect-timeout 6 --max-time 10 \
             'https://api.ipify.org' 2>/dev/null || :)
-        if [[ $gemini_code =~ ^(200|301|302)$ ]]; then
-            info "Psiphon (127.0.0.1:$port) → Gemini HTTP $gemini_code${gemini_ip:+ · egress IP $gemini_ip}."
+        if [[ -x $gemini_check ]]; then
+            gem_out=$("$gemini_check" 2>&1) || gem_rc=$?
+            case "$gem_rc" in
+                0) info "Psiphon (127.0.0.1:$port${gemini_ip:+, IP $gemini_ip}) → Gemini: сообщение отправлено и ответ получен (${gem_out#ok — })." ;;
+                1) warn "Psiphon (127.0.0.1:$port${gemini_ip:+, IP $gemini_ip}) → Gemini ОТКЛОНИЛ сообщение: $gem_out"; result=1 ;;
+                3) warn "Psiphon (127.0.0.1:$port${gemini_ip:+, IP $gemini_ip}) → Gemini требует КАПЧУ (/sorry): $gem_out"; result=1 ;;
+                *)
+                    if grep -qiE '/sorry|captcha' <<< "$gem_out"; then
+                        warn "Psiphon (127.0.0.1:$port${gemini_ip:+, IP $gemini_ip}) → Gemini отправил на КАПЧУ: $gem_out"
+                        result=1
+                    else
+                        gemini_code=$(curl --socks5-hostname "127.0.0.1:$port" -sS -o /dev/null -w '%{http_code}' \
+                            --connect-timeout 6 --max-time 12 'https://gemini.google.com/app' 2>/dev/null || printf '000')
+                        if [[ $gemini_code =~ ^(200|301|302)$ ]]; then
+                            warn "Psiphon (127.0.0.1:$port${gemini_ip:+, IP $gemini_ip}) → Сайт открывается (HTTP $gemini_code), но тестовое сообщение не подтвердилось: $gem_out"
+                            result=1
+                        else
+                            warn "Psiphon (127.0.0.1:$port) → Gemini ответил HTTP $gemini_code ($gem_out)."
+                            result=1
+                        fi
+                    fi
+                    ;;
+            esac
         else
-            warn "Psiphon (127.0.0.1:$port) → Gemini ответил HTTP $gemini_code."
-            result=1
+            gemini_code=$(curl --socks5-hostname "127.0.0.1:$port" -sS -o /dev/null -w '%{http_code}' \
+                --connect-timeout 6 --max-time 12 'https://gemini.google.com/app' 2>/dev/null || printf '000')
+            if [[ $gemini_code =~ ^(200|301|302)$ ]]; then
+                info "Psiphon (127.0.0.1:$port) → Gemini HTTP $gemini_code${gemini_ip:+ · egress IP $gemini_ip}."
+            else
+                warn "Psiphon (127.0.0.1:$port) → Gemini ответил HTTP $gemini_code."
+                result=1
+            fi
         fi
     else
         info 'Psiphon · не запущен на 127.0.0.1:1080 (пропуск теста Gemini).'

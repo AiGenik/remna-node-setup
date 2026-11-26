@@ -28,12 +28,12 @@ SIMULATION=ok
     held_lock=
     lslocks() { printf '%s\n' "$held_lock"; }
     sleep() {
-        [[ $1 == 5 ]] || return 1
+        [[ $1 == 2 ]] || return 1
         printf 'inactive\n' > "$service_state"
         held_lock=
     }
     release_wait_for_apt 2>"$errors"
-    grep -Fq 'Проверяю каждые 5 секунд' "$errors"
+    grep -Fq 'Системное обновление Ubuntu' "$errors"
     grep -Fq 'APT свободен' "$errors"
     [[ $(< "$service_state") == inactive ]]
 
@@ -145,7 +145,7 @@ done
 SIMULATION=ok
 
 apt_upgrade_installed_apply "$plan"
-grep -Fq 'DPkg::Lock::Timeout=120' "$log"
+grep -Fq 'DPkg::Lock::Timeout=300' "$log"
 grep -Fq 'DPkg::Options::=--force-confold' "$log"
 grep -Fq 'APT::Get::allow-downgrades=false' "$log"
 grep -Fq 'APT::Get::allow-change-held-packages=false' "$log"

@@ -60,7 +60,10 @@ apt_installed_version() {
 }
 
 _apt_refresh_indexes() {
-    apt-get -o APT::Update::Error-Mode=any \
+    if declare -F release_wait_for_apt >/dev/null; then
+        release_wait_for_apt || return 1
+    fi
+    apt-get -o DPkg::Lock::Timeout=300 -o APT::Update::Error-Mode=any \
         -o Acquire::AllowInsecureRepositories=false \
         -o Acquire::AllowDowngradeToInsecureRepositories=false \
         -o Acquire::AllowWeakRepositories=false update || {
@@ -143,7 +146,7 @@ _apt_run_package_plan() {
     # Keep existing dpkg conffiles. Dependencies may be added, but APT must
     # reject removals, downgrades, untrusted downloads, and held-package changes.
     local -a apt_args=(
-        -o DPkg::Lock::Timeout=120
+        -o DPkg::Lock::Timeout=300
         -o DPkg::Options::=--force-confold -o APT::Ignore-Hold=false
         -o APT::Get::allow-change-held-packages=false -o APT::Get::allow-downgrades=false
         -o APT::Get::allow-unauthenticated=false -o APT::Get::force-yes=false

@@ -165,6 +165,31 @@ ui_pause() {
     IFS= read -r
 }
 
+_ui_live_tail() {
+    local file=$1 count=${2:-4} width=${3:-52}
+    [[ -s $file ]] || return 0
+    LC_ALL=C awk -v count="$count" -v width="$width" '
+        {
+            gsub(/\033\[[0-9;?]*[A-Za-z]/, "")
+            n = split($0, parts, /\r/)
+            line = parts[n]
+            gsub(/[[:cntrl:]]/, "", line)
+            sub(/^[[:space:]]+/, "", line)
+            sub(/[[:space:]]+$/, "", line)
+            if (length(line) > 0) buf[++total] = line
+        }
+        END {
+            start = total - count + 1
+            if (start < 1) start = 1
+            for (i = start; i <= total; i++) {
+                s = buf[i]
+                if (width > 1 && length(s) > width) s = substr(s, 1, width - 1) "..."
+                print s
+            }
+        }
+    ' "$file" 2>/dev/null || :
+}
+
 ui_run() {
     local title=$1
     shift
@@ -174,13 +199,38 @@ ui_run() {
         return
     fi
     (
-        local output status=0 mark='✓'
+        local output pid='' status=0 mark='✓' mark_color=${UI_OK:-$UI_BOLD}
+        local start=$SECONDS elapsed=0 spin='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏' frame=0 ch last='' max_line
         output=$(mktemp) || return
-        trap 'rm -f -- "$output"' EXIT
+        trap 'if [[ -n $pid ]]; then kill "$pid" 2>/dev/null || :; fi; rm -f -- "$output"' EXIT
+        "$@" </dev/null > "$output" 2>&1 &
+        pid=$!
         printf '  %s…%s %s' "$UI_MUTED" "$UI_RESET" "$title"
-        "$@" > "$output" 2>&1 || status=$?
-        if (( status != 0 )); then mark='×'; fi
-        printf '\r\033[K  %s%s%s %s\n' "$UI_BOLD" "$mark" "$UI_RESET" "$title"
+        while kill -0 "$pid" 2>/dev/null; do
+            elapsed=$((SECONDS - start))
+            ch=${spin:frame % 10:1}
+            frame=$((frame + 1))
+            last=$(_ui_live_tail "$output" 1 "$((UI_COLUMNS - ${#title} - 18))")
+            printf '\r\033[K  %s%s%s %s %s[%02d:%02d]%s' \
+                "${UI_ACCENT:-$UI_BOLD}" "$ch" "$UI_RESET" "$title" \
+                "$UI_MUTED" "$((elapsed / 60))" "$((elapsed % 60))" "$UI_RESET"
+            if [[ -n $last ]]; then
+                max_line=$((UI_COLUMNS - ${#title} - 18))
+                if (( max_line >= 8 )); then
+                    printf ' %s· %s%s' "$UI_MUTED" "$last" "$UI_RESET"
+                fi
+            fi
+            sleep 0.25 || break
+        done
+        wait "$pid" || status=$?
+        pid=''
+        elapsed=$((SECONDS - start))
+        if (( status != 0 )); then mark='×'; mark_color=${UI_DANGER:-$UI_BOLD}; fi
+        if (( elapsed >= 2 )); then
+            printf '\r\033[K  %s%s%s %s %s(%d с)%s\n' "$mark_color" "$mark" "$UI_RESET" "$title" "$UI_MUTED" "$elapsed" "$UI_RESET"
+        else
+            printf '\r\033[K  %s%s%s %s\n' "$mark_color" "$mark" "$UI_RESET" "$title"
+        fi
         if (( status != 0 )); then tail -n 16 -- "$output" >&2; fi
         return "$status"
     )
@@ -213,10 +263,33 @@ ui_install_phase() {
     else
         ui_install_progress "$UI_PROGRESS_DONE"
         (
-            local output status=0
+            local output pid='' status=0 start=$SECONDS elapsed spin='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏' frame=0 ch line rule
+            local tail_lines=4 box_width=$((UI_COLUMNS - 8))
             output=$(mktemp) || return
-            trap 'rm -f -- "$output"' EXIT
-            "$@" > "$output" 2>&1 || status=$?
+            trap 'if [[ -n $pid ]]; then kill "$pid" 2>/dev/null || :; fi; rm -f -- "$output"' EXIT
+            "$@" </dev/null > "$output" 2>&1 &
+            pid=$!
+            if [[ $UI_COMPACT != yes ]] && kill -0 "$pid" 2>/dev/null; then
+                printf '\n\033[s'
+                while kill -0 "$pid" 2>/dev/null; do
+                    elapsed=$((SECONDS - start))
+                    ch=${spin:frame % 10:1}
+                    frame=$((frame + 1))
+                    rule=$((UI_RULE_WIDTH > 22 ? UI_RULE_WIDTH - 22 : 8))
+                    printf -v line '%*s' "$rule" ''
+                    printf '\033[u\033[J  %s%s%s %sПроцесс · [%02d:%02d]%s %s%s%s\n' \
+                        "${UI_ACCENT:-$UI_BOLD}" "$ch" "$UI_RESET" \
+                        "$UI_MUTED" "$((elapsed / 60))" "$((elapsed % 60))" "$UI_RESET" \
+                        "$UI_MUTED" "${line// /─}" "$UI_RESET"
+                    while IFS= read -r line; do
+                        printf '  %s│%s %s\n' "$UI_MUTED" "$UI_RESET" "$line"
+                    done < <(_ui_live_tail "$output" "$tail_lines" "$box_width")
+                    sleep 0.25 || break
+                done
+                printf '\033[u\033[J'
+            fi
+            wait "$pid" || status=$?
+            pid=''
             if (( status != 0 )); then
                 ui_install_progress "$UI_PROGRESS_DONE" yes
                 printf '\n'

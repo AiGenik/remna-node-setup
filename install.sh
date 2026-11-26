@@ -22,18 +22,47 @@ release_apt_is_busy() {
     grep -Eq '^[[:space:]]*/var/(lib/(dpkg/lock(-frontend)?|apt/lists/lock)|cache/apt/archives/lock)\*?[[:space:]]*$' <<< "$locks"
 }
 
+_release_apt_holder() {
+    local units holder=''
+    units=$(systemctl list-units --state=activating,active --no-legend 'apt-daily*' 2>/dev/null |
+        awk '{print $1}' | paste -sd ', ' -) || units=
+    holder=$(pgrep -fa 'unattended-upgrade|apt\.systemd\.daily|apt-get|aptitude|dpkg' 2>/dev/null |
+        awk '!/pgrep/ {print $2; exit}') || holder=
+    holder=${holder##*/}
+    if [[ -n $units && -n $holder ]]; then
+        printf '%s (%s)' "$holder" "$units"
+    elif [[ -n $holder ]]; then
+        printf '%s' "$holder"
+    elif [[ -n $units ]]; then
+        printf '%s' "$units"
+    else
+        printf 'apt/dpkg'
+    fi
+}
+
 release_wait_for_apt() {
-    local deadline=$((SECONDS + 600))
+    local deadline=$((SECONDS + 600)) start=$SECONDS elapsed holder last_log=-15
     if ! release_apt_is_busy; then return 0; fi
-    printf '%s\n' 'APT занят. Проверяю каждые 5 секунд, до 10 минут.' >&2
+    holder=$(_release_apt_holder)
+    printf 'Системное обновление Ubuntu (%s) ещё выполняется — ожидаем освобождения (до 10 мин).\n' "$holder" >&2
     while release_apt_is_busy; do
+        elapsed=$((SECONDS - start))
         if (( SECONDS >= deadline )); then
-            release_error 'APT всё ещё занят. Дождитесь завершения системных обновлений и повторите установку.'
-            return
+            release_error 'APT всё ещё занят системным обновлением. Подождите 1–2 минуты и повторите.'
+            return 1
         fi
-        sleep 5 || return 1
+        holder=$(_release_apt_holder)
+        if [[ -t 2 ]]; then
+            printf '\r\033[K  ⏳ Ждём завершения %s [%02d:%02d / 10:00]…' \
+                "$holder" "$((elapsed / 60))" "$((elapsed % 60))" >&2
+        elif (( elapsed - last_log >= 15 )); then
+            last_log=$elapsed
+            printf '  … ждём %s (%d с)\n' "$holder" "$elapsed" >&2
+        fi
+        sleep 2 || return 1
     done
-    printf '%s\n' 'APT свободен. Продолжаю установку.' >&2
+    if [[ -t 2 ]]; then printf '\r\033[K' >&2; fi
+    printf 'Системное обновление завершено, APT свободен. Продолжаю установку.\n' >&2
 }
 
 release_acquire_lock() {
