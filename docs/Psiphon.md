@@ -6,7 +6,7 @@ Psiphon даёт ноде отдельный выход через SOCKS5 на `
 2. Выберите регион или оставьте «авто». Укажите свободный локальный SOCKS-порт.
 3. Проверьте статус командой `sudo remna-node-setup psiphon status`.
 
-Управляемый Psiphon входит в «Обновить всё» и автообновления. Проверенная версия установщика и digest образа поставляются с релизом Remna Node Setup. Ручная установка vps-psiphon сохраняет своё управление.
+Управляемый Psiphon входит в «Обновить всё» и автообновления. Проверенная версия установщика и digest образа поставляются с релизом Remna Node Setup. Ручная установка vps-psiphon сохраняет своё управление. Каждая нода поднимает собственный изолированный `vps-psiphon` на `127.0.0.1:1080` и не пересылает трафик через другие ноды. При смене региона через `vps-psiphon region КОД` (например `CA` или `NL`) `status`, `doctor` и `update` учитывают активный `EGRESS_REGION` из `/etc/default/vps-psiphon`.
 
 ## Шаблон Gemini
 
@@ -25,4 +25,4 @@ umask 077
 sudo remna-node-setup psiphon profile-merge < profile.json > profile-new.json
 ```
 
-Шаблон отправляет TCP к указанным хостам Gemini через Psiphon и блокирует UDP/443 к тем же хостам, чтобы клиент повторил запрос по TCP. `localIP` ограничивает изменения выбранной нодой. После сохранения проверьте подключение одного клиента. [Маршрутизация Xray](https://xtls.github.io/en/config/routing.html)
+Шаблон отправляет TCP только к указанным хостам Gemini (`gemini.google.com`, `aistudio.google.com`, `generativelanguage.googleapis.com` и др.) через `psiphon-out` и блокирует UDP/443 к тем же хостам, чтобы клиент повторил запрос по TCP. Остальной трафик (включая YouTube) остаётся на прямом выходе ноды (`DIRECT`). `localIP` ограничивает изменения выбранной нодой. После сохранения проверьте подключение одного клиента. [Маршрутизация Xray](https://xtls.github.io/en/config/routing.html)

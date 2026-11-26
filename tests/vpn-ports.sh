@@ -173,4 +173,41 @@ MOCK_UPDATES_STATE=1
 MOCK_APT_UPGRADE_TIMER=no
 [[ $(security_os_updates_status 2>&1) == *'не подтверждены'* ]]
 
+UFW_CONF_FILE="$STATE_DIR/ufw.conf"
+printf 'ENABLED=no\n' > "$UFW_CONF_FILE"
+MOCK_UFW_BOOT=enabled
+if security_ufw_boot_verified >/dev/null 2>&1; then exit 1; fi
+ufw() {
+    printf '%s\n' "$*" >> "$log"
+    if [[ $* == '--force enable' ]]; then
+        MOCK_UFW_STATE=active
+        printf 'ENABLED=yes\n' > "$UFW_CONF_FILE"
+    fi
+}
+fail2ban-client() { return 1; }
+rm -rf -- "$STATE_DIR/traffic-guard"
+: > "$log"
+MOCK_UFW_BOOT=masked
+security_repair_boot >/dev/null
+[[ $MOCK_UFW_BOOT == enabled ]]
+grep -Fqx 'ENABLED=yes' "$UFW_CONF_FILE"
+security_ufw_boot_verified
+
+TIMESYNCD_CONF_DIR="$STATE_DIR/timesyncd.conf.d"
+timedatectl() {
+    case "$*" in
+        *'NTPSynchronized'*) printf 'no\n' ;;
+        'set-ntp true') printf 'set-ntp true\n' >> "$log" ;;
+    esac
+}
+systemctl() {
+    printf '%s\n' "$*" >> "$log"
+    case "$*" in
+        'cat systemd-timesyncd.service'|'enable --now systemd-timesyncd.service'|'restart systemd-timesyncd.service') return 0 ;;
+        *) return 1 ;;
+    esac
+}
+security_ensure_ntp >/dev/null
+grep -Fqx 'NTP=time.cloudflare.com time.google.com' "$TIMESYNCD_CONF_DIR/90-remna-ntp.conf"
+
 printf '%s\n' 'Обнаружение VPN-портов, изоляция служебных портов и правила UFW проверены.'

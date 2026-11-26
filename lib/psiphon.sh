@@ -132,6 +132,14 @@ except OSError:
 PY
 }
 
+_psiphon_env_region() {
+    local region
+    [[ -f $_psiphon_environment && ! -L $_psiphon_environment ]] || return 1
+    region=$(awk -F= '/^EGRESS_REGION=/{print $2; exit}' "$_psiphon_environment") || return 1
+    [[ $region =~ ^(|[A-Z]{2})$ ]] || return 1
+    printf '%s\n' "$region"
+}
+
 _psiphon_verify() {
     local region=$1 port=$2 image=$3 config actual
     systemctl is-active --quiet "$_psiphon_service" || return 1
@@ -297,7 +305,7 @@ _psiphon_install() (
 psiphon_select_settings() {
     local region='' port=1080
     if psiphon_is_managed; then
-        region=$(jq -r '.region' "$(_psiphon_marker)") || return 1
+        region=$(_psiphon_env_region 2>/dev/null) || region=$(jq -r '.region' "$(_psiphon_marker)") || return 1
         port=$(jq -r '.port' "$(_psiphon_marker)") || return 1
     elif _psiphon_existing_install; then
         fail 'Обнаружен сторонний vps-psiphon. Используйте его существующий интерфейс.'
@@ -344,7 +352,7 @@ psiphon_update() {
         return 0
     fi
     marker=$(_psiphon_marker) || return 1
-    region=$(jq -r '.region' "$marker") || return 1
+    region=$(_psiphon_env_region 2>/dev/null) || region=$(jq -r '.region' "$marker") || return 1
     port=$(jq -r '.port' "$marker") || return 1
     image=$(jq -r '.image' "$marker") || return 1
     commit=$(jq -r '.commit' "$marker") || return 1
@@ -373,7 +381,7 @@ psiphon_status() {
         return 0
     fi
     marker=$(_psiphon_marker) || return 1
-    region=$(jq -r '.region' "$marker") || return 1
+    region=$(_psiphon_env_region 2>/dev/null) || region=$(jq -r '.region' "$marker") || return 1
     port=$(jq -r '.port' "$marker") || return 1
     image=$(jq -r '.image' "$marker") || return 1
     if ! _psiphon_verify "$region" "$port" "$image"; then

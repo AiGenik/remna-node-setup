@@ -696,7 +696,7 @@ doctor() {
         if [[ $(timedatectl show -p NTPSynchronized --value 2>/dev/null || :) == yes ]]; then
             info 'Время синхронизировано по NTP.'
         else
-            warn 'Синхронизация времени NTP не подтверждена (критично для REALITY).'
+            warn 'Синхронизация времени NTP не подтверждена (критично для REALITY). Проверьте systemd-timesyncd (time.cloudflare.com) и UDP/123.'
         fi
     fi
     df -h -- "$STATE_DIR" "$BACKUP_DIR" || result=1

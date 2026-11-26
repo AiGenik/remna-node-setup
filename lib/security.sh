@@ -47,6 +47,12 @@ security_ufw_set_boot() {
     [[ $(security_ufw_boot_state) == "$desired" ]]
 }
 
+_security_ufw_conf_enabled() {
+    local conf=${UFW_CONF_FILE:-/etc/ufw/ufw.conf}
+    [[ -f $conf ]] || return 0
+    grep -Eq '^[[:space:]]*ENABLED=yes([[:space:]]|$)' "$conf"
+}
+
 security_ufw_boot_verified() {
     local state
     state=$(security_ufw_boot_state) || state=неизвестен
@@ -54,11 +60,39 @@ security_ufw_boot_verified() {
         warn "UFW не восстановит правила штатно после запуска · $state. Откройте «Восстановить автозапуск защиты»."
         return 1
     fi
+    if ! _security_ufw_conf_enabled; then
+        warn 'В /etc/ufw/ufw.conf отключён автозапуск (ENABLED=no). Откройте «Восстановить автозапуск защиты».'
+        return 1
+    fi
+}
+
+security_ensure_ntp() {
+    local conf_dir=${TIMESYNCD_CONF_DIR:-/etc/systemd/timesyncd.conf.d} conf temporary
+    command -v timedatectl >/dev/null 2>&1 || return 0
+    if [[ $(timedatectl show -p NTPSynchronized --value 2>/dev/null || :) == yes ]]; then
+        return 0
+    fi
+    systemctl cat systemd-timesyncd.service >/dev/null 2>&1 || return 0
+    mkdir -p -- "$conf_dir" || return 1
+    conf="$conf_dir/90-remna-ntp.conf"
+    temporary=$(mktemp "$conf_dir/.remna-ntp.XXXXXX") || return 1
+    if ! printf '%s\n' '[Time]' 'NTP=time.cloudflare.com time.google.com' 'FallbackNTP=pool.ntp.org' > "$temporary" ||
+       ! chmod 0644 "$temporary" || ! mv -f -- "$temporary" "$conf"; then
+        rm -f -- "$temporary"
+        return 1
+    fi
+    timedatectl set-ntp true >/dev/null 2>&1 || :
+    systemctl enable --now systemd-timesyncd.service >/dev/null 2>&1 || :
+    systemctl restart systemd-timesyncd.service >/dev/null 2>&1 || :
+    info 'Настроены резервные NTP-серверы (time.cloudflare.com, time.google.com).'
 }
 
 security_repair_boot() {
     local unit
     security_ufw_set_boot enabled || return
+    if ! _security_ufw_conf_enabled; then
+        ufw --force enable >/dev/null || return
+    fi
     if [[ -s $STATE_DIR/traffic-guard/version ]]; then
         for unit in antiscan-ipset-restore.service antiscan-move-rules.service; do
             systemctl enable "$unit" || return
@@ -68,6 +102,7 @@ security_repair_boot() {
     if fail2ban-client status sshd >/dev/null 2>&1; then
         systemctl enable fail2ban.service || return
     fi
+    security_ensure_ntp || :
     info 'Автозапуск защиты восстановлен.'
 }
 
@@ -405,7 +440,9 @@ security_apply() {
         security_allow_acme || return 1
     fi
 
-    if [[ $ufw_state == inactive ]]; then ufw --force enable || return 1; fi
+    if [[ $ufw_state == inactive ]] || ! _security_ufw_conf_enabled; then
+        ufw --force enable || return 1
+    fi
     security_ufw_active || { fail "UFW не активировался."; return 1; }
     security_ufw_set_boot enabled || return
     if [[ $guard_was_active == yes ]] &&
@@ -416,6 +453,7 @@ security_apply() {
         fi
     fi
     security_install_sshd_jail || return 1
+    security_ensure_ntp || :
     info "UFW включён. Fail2Ban защищает SSH на порту $SSH_PORT."
 }
 

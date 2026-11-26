@@ -10,6 +10,7 @@ source "$PROJECT_DIR/lib/psiphon.sh"
 fixture=$(mktemp -d)
 trap 'rm -rf -- "$fixture"' EXIT
 STATE_DIR=$fixture
+_psiphon_environment="$fixture/vps-psiphon"
 
 [[ $(_psiphon_region auto) == "" && $(_psiphon_region de) == DE ]]
 if _psiphon_region 'DE; echo x' 2>/dev/null; then exit 1; fi
@@ -83,5 +84,24 @@ psiphon_apply_settings DE 1081
 [[ ! -e $fixture/install ]]
 psiphon_apply_settings NL 1081
 [[ $(< "$fixture/install") == 'NL 1081' ]]
+
+cat > "$_psiphon_environment" <<'ENV'
+IMAGE=swarupsengupta2007/psiphon@sha256:ed678abc7145e0fb550eb889a5dfed74bd8495bca16b958d6b7ac582d869bfe6
+BIND=127.0.0.1
+SOCKS_PORT=1081
+PUBLISH_HTTP=0
+EGRESS_REGION=CA
+ENV
+[[ $(_psiphon_env_region) == CA ]]
+rm -f -- "$fixture/install"
+jq -n --arg image "$PSIPHON_IMAGE" '{
+    version:"1.2",commit:"outdated",region:"DE",port:1081,image:$image
+}' > "$fixture/psiphon.json"
+psiphon_update
+[[ $(< "$fixture/install") == 'CA 1081' ]]
+_node_docker() { printf '{"noticeType":"Tunnels","data":{"count":1}}\n'; }
+[[ $(psiphon_status 2>&1) == *'регион CA.'* ]]
+printf 'EGRESS_REGION=bad\n' > "$_psiphon_environment"
+if _psiphon_env_region 2>/dev/null; then exit 1; fi
 
 printf '%s\n' 'psiphon-smoke OK'
