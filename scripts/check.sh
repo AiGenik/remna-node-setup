@@ -2,7 +2,7 @@
 set -euo pipefail
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
-shell_files=(remna-node-setup remna-ssh install.sh lib/*.sh scripts/*.sh tests/*.sh)
+shell_files=(i remna-node-setup remna-ssh install.sh lib/*.sh scripts/*.sh tests/*.sh)
 for file in "${shell_files[@]}"; do bash -n "$file"; done
 shellcheck -x "${shell_files[@]}"
 ./remna-node-setup --self-test

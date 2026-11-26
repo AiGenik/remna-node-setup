@@ -15,7 +15,7 @@ check_probe_destination() {
 port_preflight() {
     local mode=$1 node_port=$2 vpn_ports=$3 source_ips=$4 destination=$5
     local entry port protocol options listeners label result=0 active xray_ports running_node=no
-    local -a ports=("$node_port/tcp") probe_ports=() selected=()
+    local -a ports=("$node_port/tcp") probe_ports=() probe_udp=() busy_ports=() selected=()
     local -A seen=()
     read -r -a selected <<< "$vpn_ports"
     ports+=("${selected[@]}")
@@ -41,10 +41,17 @@ port_preflight() {
         listeners=$(ss "$options" "sport = :$port") || return
         if [[ -z $listeners ]]; then
             info "  $entry · $label · свободен"
-            if [[ $protocol == tcp && $label != 'локальный self-steal' ]]; then probe_ports+=("$port"); fi
+            if [[ $protocol == tcp && $label != 'локальный self-steal' ]]; then
+                probe_ports+=("$port")
+            elif [[ $protocol == udp ]]; then
+                probe_udp+=("$port")
+            fi
         else
             info "  $entry · $label · слушает"
             if [[ $entry == "$node_port/tcp" ]] && _node_owns_listeners "$listeners" && node_verify; then running_node=yes; fi
+            if [[ $protocol == tcp && $label == VPN ]]; then
+                busy_ports+=("$port")
+            fi
             if [[ $mode == install && $label == VPN && " $xray_ports " != *" $entry "* ]]; then
                 fail "Порт $entry занят другим сервисом. Укажите свободный порт в профиле Remnawave."
                 result=1
@@ -57,8 +64,8 @@ port_preflight() {
         info 'Внешний обмен не проверялся. Запустите preflight в терминале для проверки с панели.'
         return 0
     fi
-    if (( ${#probe_ports[@]} == 0 )) && [[ $running_node == no ]]; then
-        info '  Для внешнего теста нужен свободный TCP-порт.'
+    if (( ${#probe_ports[@]} == 0 && ${#probe_udp[@]} == 0 && ${#busy_ports[@]} == 0 )) && [[ $running_node == no ]]; then
+        info '  Для внешнего теста нужен хотя бы один открытый TCP или UDP порт.'
         return 0
     fi
 
@@ -67,25 +74,39 @@ port_preflight() {
         active=$(yes_no '  Запустить проверку с панели?' y) || return
     else
         info '  Ручная проверка.'
-        info '  С компьютера · remna-ssh --panel'
+        info '  С компьютера · rns (или remna-ssh --panel)'
         active=$(yes_no '  Показать команду для ручной проверки?' n) || return
     fi
     if [[ $active != yes ]]; then info '  Внешний обмен не проверялся.'; return 0; fi
     if [[ -n ${SSH_PANEL_PROBE_HOST:-} ]]; then
-        local tls=0
-        if (( ${#probe_ports[@]} > 16 )); then
-            fail 'Автоматическая проверка принимает до 16 свободных TCP-портов за раз.'
+        local tls=0 udp_csv busy_csv
+        local -a extra_args=()
+        if (( ${#probe_ports[@]} + ${#probe_udp[@]} + ${#busy_ports[@]} > 24 )); then
+            fail 'Автоматическая проверка принимает до 24 портов за раз.'
             return 1
         fi
         if [[ $running_node == yes ]]; then tls=$node_port; fi
-        if (( ${#probe_ports[@]} > 0 )); then
+        if (( ${#probe_ports[@]} > 0 || ${#probe_udp[@]} > 0 || ${#busy_ports[@]} > 0 )); then
             if [[ -z $source_ips ]]; then source_ips=$(ask_panel_ips '') || return; fi
             source_ips=$(check_panel_ips "$source_ips") || return
         fi
+        if (( ${#probe_udp[@]} > 0 )); then
+            udp_csv=$(IFS=,; printf '%s' "${probe_udp[*]}")
+            extra_args+=(--udp "$udp_csv")
+        fi
+        if (( ${#busy_ports[@]} > 0 )); then
+            busy_csv=$(IFS=,; printf '%s' "${busy_ports[*]}")
+            extra_args+=(--busy "$busy_csv")
+        fi
         if ! python3 "$PROJECT_DIR/lib/port-probe.py" --launcher "$SSH_MENU_TICKET" "$tls" \
-            "$SSH_PANEL_PROBE_HOST" "$source_ips" "${probe_ports[@]}"; then
-            ui_attention 'Проверка не пройдена.'
+            "${extra_args[@]}" "$SSH_PANEL_PROBE_HOST" "$source_ips" "${probe_ports[@]}"; then
+            ui_attention 'Проверка с панели на ноду не пройдена.'
             return 1
+        fi
+        if [[ -n $source_ips ]]; then
+            info '  Проверка обратного маршрута нода → панель:'
+            # shellcheck disable=SC2086 # Space-separated normalized IPs from check_panel_ips.
+            python3 "$PROJECT_DIR/lib/port-probe.py" --outbound $source_ips || :
         fi
         if [[ $mode == install ]]; then ui_pause 'продолжить'; fi
         return
@@ -102,17 +123,24 @@ port_preflight() {
         printf '  timeout 10 openssl s_client -connect %s:%s -brief </dev/null\n' "$endpoint" "$node_port"
         info '  Вывод версии TLS показывает, что обмен с сервисом начался.'
     fi
-    if (( ${#probe_ports[@]} == 0 )); then
+    if (( ${#probe_ports[@]} == 0 && ${#probe_udp[@]} == 0 )); then
         if [[ $mode == install ]]; then ui_pause 'продолжить'; fi
         return
     fi
     if [[ -z $source_ips ]]; then source_ips=$(ask_panel_ips '') || return; fi
     source_ips=$(check_panel_ips "$source_ips") || return
     info "  Источники для теста · $source_ips"
-    if ! python3 "$PROJECT_DIR/lib/port-probe.py" "$destination" "$source_ips" "${probe_ports[@]}"; then
+    local -a manual_extra=()
+    if (( ${#probe_udp[@]} > 0 )); then
+        manual_extra=(--udp "$(IFS=,; printf '%s' "${probe_udp[*]}")")
+    fi
+    if ! python3 "$PROJECT_DIR/lib/port-probe.py" "${manual_extra[@]}" "$destination" "$source_ips" "${probe_ports[@]}"; then
         ui_attention 'Обмен не подтверждён. Проверьте адрес и firewall VPS или провайдера.'
         return 1
     fi
+    info '  Проверка обратного маршрута нода → панель:'
+    # shellcheck disable=SC2086 # Space-separated normalized IPs from check_panel_ips.
+    python3 "$PROJECT_DIR/lib/port-probe.py" --outbound $source_ips || :
     if [[ $mode == install ]]; then ui_pause 'продолжить'; fi
 }
 

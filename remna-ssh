@@ -2,13 +2,150 @@
 set -euo pipefail
 
 usage() {
-    printf '%s\n' 'Использование: remna-ssh [--port PORT] [--panel SSH_АЛИАС] [user@]host' \
-        'Можно указать имена из ~/.ssh/config.' \
-        '--panel запускает проверку с панели. Нужны Python 3.8+, SSH-ключ и версия скрипта 1.1 или новее.'
+    printf '%s\n' 'Использование: remna-ssh [--port PORT] [--panel SSH_АЛИАС] [--bootstrap] [[user@]host]' \
+        'Без аргументов в терминале запускает пошаговый мастер подключения и автоустановки на новый VPS.' \
+        'Короткая команда после установки клиента: rns' \
+        'Можно указать имена из ~/.ssh/config.'
 }
 
 ssh_target() {
     [[ -n $1 && $1 != -* && $1 != *[[:space:][:cntrl:]]* ]]
+}
+
+_ssh_config_aliases() {
+    local cfg="$HOME/.ssh/config"
+    [[ -r $cfg ]] || return 0
+    awk '
+        tolower($1) == "host" {
+            for (i = 2; i <= NF; i++) {
+                h = $i
+                if (substr(h, 1, 1) == "#") break
+                if (h ~ /[*?!]/ || h == "") continue
+                if (!seen[h]++) print h
+            }
+        }
+    ' "$cfg"
+}
+
+_ssh_has_host_alias() {
+    local target=$1 alias
+    while IFS= read -r alias; do
+        if [[ $alias == "$target" ]]; then return 0; fi
+    done < <(_ssh_config_aliases)
+    return 1
+}
+
+_ssh_saved_panel_file() {
+    printf '%s/.config/remna-node-setup/panel\n' "$HOME"
+}
+
+_ssh_load_saved_panel() {
+    local file
+    file=$(_ssh_saved_panel_file)
+    [[ -f $file && ! -L $file ]] || return 0
+    head -n 1 "$file" 2>/dev/null || :
+}
+
+_ssh_save_panel() {
+    local value=$1 dir file tmp
+    file=$(_ssh_saved_panel_file)
+    dir=${file%/*}
+    mkdir -p -- "$dir" && chmod 700 "$dir" 2>/dev/null || return 0
+    tmp=$(mktemp "$dir/.panel.XXXXXX") || return 0
+    if ! printf '%s\n' "$value" > "$tmp" || ! chmod 600 "$tmp" || ! mv -f -- "$tmp" "$file"; then
+        rm -f -- "$tmp"
+    fi
+}
+
+_ssh_interactive_setup() {
+    local raw_dest port_arg=$1 has_port_flag=$2
+    local detected_port choice default_panel='' saved_panel='' i=0
+    local -a aliases=()
+
+    printf '\n  \033[1;96m╭─[  ◉  ]─╮\033[0m  \033[1mREMNA-SSH · подключение к ноде\033[0m\n'
+    printf '  \033[2m────────────────────────────────────────────\033[0m\n\n'
+
+    while :; do
+        printf '  \033[1mАдрес новой ноды\033[0m (IP, user@IP или хост из ~/.ssh/config) → '
+        IFS= read -r raw_dest || return 1
+        raw_dest=${raw_dest#"${raw_dest%%[![:space:]]*}"}
+        raw_dest=${raw_dest%"${raw_dest##*[![:space:]]}"}
+        if ! ssh_target "$raw_dest"; then
+            printf '  \033[1;93mУкажите корректный IP, домен или SSH-алиас.\033[0m\n' >&2
+            continue
+        fi
+        if [[ $raw_dest != *@* ]] && ! _ssh_has_host_alias "$raw_dest"; then
+            raw_dest="root@$raw_dest"
+        fi
+        destination=$raw_dest
+        break
+    done
+
+    if [[ $has_port_flag != yes ]]; then
+        detected_port=$(ssh -G "$destination" 2>/dev/null | awk '$1 == "port" {print $2; exit}') || detected_port=22
+        if ! _ssh_has_host_alias "${destination#*@}"; then
+            while :; do
+                printf '  \033[1mПорт SSH ноды\033[0m [%s] → ' "${detected_port:-22}"
+                IFS= read -r port_arg || return 1
+                port_arg=${port_arg:-${detected_port:-22}}
+                if [[ $port_arg =~ ^[1-9][0-9]{0,4}$ ]] && (( port_arg <= 65535 )); then
+                    if [[ $port_arg != 22 ]]; then
+                        ssh_options+=(-p "$port_arg")
+                    fi
+                    break
+                fi
+                printf '  \033[1;93mВведите порт 1–65535.\033[0m\n' >&2
+            done
+        fi
+    fi
+
+    if [[ -z $panel ]]; then
+        saved_panel=$(_ssh_load_saved_panel)
+        while IFS= read -r line; do
+            [[ -n $line && $line != "$destination" && $line != "${destination#*@}" ]] || continue
+            aliases+=("$line")
+        done < <(_ssh_config_aliases)
+        if [[ -n $saved_panel ]] && ssh_target "$saved_panel"; then
+            default_panel=$saved_panel
+        elif (( ${#aliases[@]} == 1 )); then
+            default_panel=${aliases[0]}
+        fi
+
+        printf '\n  \033[1mПанель Remnawave для проверки связи\033[0m (только локально):\n'
+        for line in "${aliases[@]}"; do
+            i=$((i + 1))
+            if [[ $line == "$default_panel" ]]; then
+                printf '    \033[1;96m[%2d]\033[0m %s \033[2m(по умолчанию)\033[0m\n' "$i" "$line"
+            else
+                printf '    \033[1;96m[%2d]\033[0m %s\n' "$i" "$line"
+            fi
+        done
+        printf '    \033[2m[ 0] Без проверки с панели\033[0m\n'
+        while :; do
+            printf '  Выбор панели (номер или SSH-адрес) [%s] → ' "${default_panel:-0}"
+            IFS= read -r choice || return 1
+            choice=${choice#"${choice%%[![:space:]]*}"}
+            choice=${choice%"${choice##*[![:space:]]}"}
+            if [[ -z $choice ]]; then
+                panel=$default_panel
+                break
+            elif [[ $choice == 0 || $choice == none ]]; then
+                panel=
+                break
+            elif [[ $choice =~ ^[1-9][0-9]*$ ]] && (( choice <= ${#aliases[@]} )); then
+                panel=${aliases[choice - 1]}
+                break
+            elif ssh_target "$choice"; then
+                panel=$choice
+                break
+            else
+                printf '  \033[1;93mВыберите номер из списка или введите адрес SSH.\033[0m\n' >&2
+            fi
+        done
+        if [[ -n $panel ]]; then
+            _ssh_save_panel "$panel"
+        fi
+    fi
 }
 
 run_panel_menu() {
@@ -28,7 +165,15 @@ import socket
 import ssl
 import sys
 
-host, token, tls_port, *ports = sys.argv[1:]
+args = sys.argv[1:]
+extra = {}
+if args[:1] == ["--extra"]:
+    extra = json.loads(args[1])
+    args = args[2:]
+
+host, token, tls_port, *ports = args
+udp_ports = extra.get("udp", [])
+busy_ports = extra.get("busy", [])
 ack = token.encode()
 body = ack * 128
 tls_status = b""
@@ -56,6 +201,32 @@ def check_tls(port):
         except (OSError, ValueError):
             return "tls_error"
 
+def check_tcp_open(port):
+    try:
+        with socket.create_connection((host, int(port)), timeout=4):
+            return "ok"
+    except socket.gaierror:
+        return "dns"
+    except TimeoutError:
+        return "tcp_timeout"
+    except ConnectionRefusedError:
+        return "refused"
+    except OSError:
+        return "unreachable"
+
+def check_udp(port):
+    try:
+        family = socket.AF_INET6 if ":" in host else socket.AF_INET
+        with socket.socket(family, socket.SOCK_DGRAM) as conn:
+            conn.settimeout(4)
+            conn.sendto(body, (host, int(port)))
+            reply, _ = conn.recvfrom(len(body) + 128)
+            return "ok" if reply == body else "incomplete"
+    except TimeoutError:
+        return "udp_timeout"
+    except OSError:
+        return "unreachable"
+
 tls_result = check_tls(tls_port) if tls_port != "0" else None
 if tls_result is not None:
     tls_status = b"+" if tls_result == "ok" else b"-"
@@ -74,8 +245,21 @@ def check(port):
 
 with ThreadPoolExecutor(max_workers=8) as pool:
     passed = list(pool.map(check, ports))
-print(json.dumps(tls_result), flush=True)
-sys.exit(not all(passed) or tls_status == b"-")
+    udp_res = {str(p): check_udp(p) for p in udp_ports}
+    busy_res = {str(p): check_tcp_open(p) for p in busy_ports}
+
+if extra:
+    print(json.dumps({"tls": tls_result, "udp": udp_res, "busy": busy_res}), flush=True)
+else:
+    print(json.dumps(tls_result), flush=True)
+
+ok = (
+    all(passed)
+    and tls_status != b"-"
+    and all(v == "ok" for v in udp_res.values())
+    and all(v == "ok" for v in busy_res.values())
+)
+sys.exit(not ok)
 '''
 
 seen = set()
@@ -100,6 +284,14 @@ TLS_MESSAGES = {
     "tls_error": "TCP открыт, TLS не установился.",
 }
 
+BUSY_MESSAGES = {
+    "ok": "Занятый порт доступен с панели (TCP открыт).",
+    "dns": "Адрес ноды не найден.",
+    "tcp_timeout": "Занятый порт недоступен с панели (таймаут — проверьте firewall/провайдера).",
+    "refused": "Подключение к порту отклонено.",
+    "unreachable": "Панель не достучалась до порта.",
+}
+
 
 def run_probe(frame):
     try:
@@ -107,18 +299,27 @@ def run_probe(frame):
         if not isinstance(message, dict) or message.get("ticket") != ticket:
             return
         token, ports, tls = message["token"], message["ports"], message["tls"]
+        udp = message.get("udp") or []
+        busy = message.get("busy") or []
         if not isinstance(token, str) or not re.fullmatch(r"[a-f0-9]{32}", token):
             return
         if not isinstance(ports, list) or len(ports) > 16 or not all(map(valid_port, ports)):
             return
-        if (tls is not None and not valid_port(tls)) or not (ports or tls):
+        if not isinstance(udp, list) or len(udp) > 16 or not all(map(valid_port, udp)):
+            return
+        if not isinstance(busy, list) or len(busy) > 16 or not all(map(valid_port, busy)):
+            return
+        if (tls is not None and not valid_port(tls)) or not (ports or udp or busy or tls):
             return
         if token in seen:
             return
     except (ValueError, KeyError):
         return
     seen.add(token)
-    args = shlex.join([host, token, str(tls or 0), *map(str, ports)])
+    extra_args = []
+    if udp or busy:
+        extra_args = ["--extra", json.dumps({"udp": udp, "busy": busy}, separators=(",", ":"))]
+    args = shlex.join([*extra_args, host, token, str(tls or 0), *map(str, ports)])
     report_line(f"Проверка с панели {panel}")
     try:
         result = subprocess.run(
@@ -130,7 +331,14 @@ def run_probe(frame):
         if result.returncode == 255:
             report_line("Не удалось войти на панель по SSH.")
             return
-        state = json.loads(result.stdout)
+        parsed = json.loads(result.stdout)
+        if isinstance(parsed, dict):
+            state = parsed.get("tls")
+            for p, st in parsed.get("busy", {}).items():
+                mark = "✓" if st == "ok" else "×"
+                report_line(f"{mark} {int(p):>5}/tcp · {BUSY_MESSAGES.get(st, st)}")
+        else:
+            state = parsed
         if tls is not None:
             if not isinstance(state, str) or state not in TLS_MESSAGES:
                 raise ValueError("invalid TLS result")
@@ -178,25 +386,46 @@ PY
 ssh_options=(-tt -o ControlMaster=no -o ControlPath=none -o ControlPersist=no
     -o ClearAllForwardings=yes -o ForwardAgent=no -o RemoteCommand=none -o ConnectTimeout=10)
 panel=
+has_port_flag=no
+bootstrap=no
+if [[ -t 0 && -t 1 ]]; then bootstrap=yes; fi
+
 while [[ ${1-} == -* ]]; do
     case $1 in
-        -h|--help) usage; exit ;;
+        -h|--help) usage; exit 0 ;;
+        --client) shift; continue ;;
+        --bootstrap) bootstrap=yes; shift; continue ;;
         -p|--port)
             port=${2-}
             if [[ ! $port =~ ^[1-9][0-9]{0,4}$ ]] || (( port > 65535 )); then usage >&2; exit 2; fi
             ssh_options+=(-p "$port")
+            has_port_flag=yes
+            shift 2
             ;;
         --panel)
             panel=${2-}
             if ! ssh_target "$panel"; then usage >&2; exit 2; fi
+            shift 2
             ;;
         *) usage >&2; exit 2 ;;
     esac
-    shift 2
 done
-if [[ $# != 1 ]] || ! ssh_target "$1"; then usage >&2; exit 2; fi
 
-destination=$1
+destination=
+if [[ $# -eq 0 ]]; then
+    if [[ -t 0 && -t 1 ]]; then
+        _ssh_interactive_setup "" "$has_port_flag" || exit 1
+    else
+        usage >&2
+        exit 2
+    fi
+elif [[ $# -eq 1 ]] && ssh_target "$1"; then
+    destination=$1
+else
+    usage >&2
+    exit 2
+fi
+
 probe_host=
 if [[ -n $panel ]]; then
     if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 8))' >/dev/null 2>&1; then
@@ -211,6 +440,7 @@ if [[ -n $panel ]]; then
         exit 2
     fi
 fi
+
 previous=
 while :; do
     ticket=$(LC_ALL=C od -An -N16 -tx1 /dev/urandom | tr -d '[:space:]')
@@ -218,11 +448,24 @@ while :; do
     args="__ssh-menu $ticket${previous:+ $previous}"
     if [[ -n $panel ]]; then args="__ssh-menu $ticket ${previous:--} $probe_host"; fi
     tool=/usr/local/bin/remna-node-setup
-    command="if [ ! -x $tool ]; then
-        printf '%s\n' 'На VPS не найден Remna Node Setup. Сначала установите мастер по шагу 1 в README.' >&2
-        exit 127
+    if [[ $bootstrap == yes ]]; then
+        command="if [ ! -x $tool ]; then
+            printf '%s\n' 'На VPS не найден Remna Node Setup — устанавливаю автоматически...'
+            inst=\$(curl -qfsSL --proto '=https' https://github.com/AiGenik/remna-node-setup/raw/HEAD/install.sh) || exit 1
+            if [ \"\$(id -u)\" -eq 0 ]; then
+                bash -c \"\$inst\" -- </dev/null || exit 1
+            else
+                printf '%s\n' \"\$inst\" | sudo bash -s -- || exit 1
+            fi
+        fi
+        if [ \"\$(id -u)\" -eq 0 ]; then exec $tool $args; else exec sudo $tool $args; fi"
+    else
+        command="if [ ! -x $tool ]; then
+            printf '%s\n' 'На VPS не найден Remna Node Setup. Сначала установите мастер по шагу 1 в README.' >&2
+            exit 127
+        fi
+        if [ \"\$(id -u)\" -eq 0 ]; then exec $tool $args; else exec sudo $tool $args; fi"
     fi
-    if [ \"\$(id -u)\" -eq 0 ]; then exec $tool $args; else exec sudo $tool $args; fi"
     result=0
     if [[ -n $panel ]]; then
         run_panel_menu "$panel" "$probe_host" "$ticket" ssh "${ssh_options[@]}" "$destination" "$command" || result=$?

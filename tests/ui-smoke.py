@@ -245,7 +245,7 @@ with Terminal() as terminal:
     screen = without_ansi(terminal.expect("Показать команду для ручной проверки? [y/N]"))
     assert "Проверка соединения" in screen and "8443/tcp · локальный self-steal" in screen
     assert "3333/tcp · панель → нода" in screen and "9443/tcp · VPN" in screen
-    assert "С компьютера · remna-ssh --panel" in screen
+    assert "С компьютера · rns (или remna-ssh --panel)" in screen
     terminal.enter()
     screen = terminal.expect("Начать установку? [Y/n]")
     assert KEY_MARKER.encode() not in screen

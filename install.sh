@@ -135,7 +135,10 @@ release_install_client() (
     fi
     chmod 0755 "$stage/remna-ssh" || return 1
     mv -f -- "$stage/remna-ssh" "$directory/remna-ssh" || return 1
-    printf 'Помощник установлен. Команда запуска: %s\n' "$directory/remna-ssh"
+    if [[ ! -d "$directory/rns" ]]; then
+        ln -sf remna-ssh "$directory/rns" 2>/dev/null || :
+    fi
+    printf 'Помощник установлен. Команда запуска: %s (коротко: rns)\n' "$directory/remna-ssh"
 )
 
 release_check_latest_version() {

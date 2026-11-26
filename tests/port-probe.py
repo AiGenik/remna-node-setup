@@ -100,4 +100,34 @@ with reserve("0.0.0.0") as occupied:
             incoming, _ = occupied.accept()
             incoming.close()
 
-print("Проверены обмен TCP в обе стороны, неполный обмен, ограничение по IP и занятый порт.")
+with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_sock:
+    udp_sock.bind(("127.0.0.1", 0))
+    udp_port = udp_sock.getsockname()[1]
+with subprocess.Popen(
+    [sys.executable, "-u", str(PROBE), "--udp", str(udp_port), "127.0.0.1", "127.0.0.1"],
+    stdout=subprocess.PIPE, text=True,
+) as udp_srv:
+    try:
+        lines = []
+        for line in udp_srv.stdout:
+            if line.startswith("python3 - "):
+                lines.append(line)
+                break
+        assert lines, "Не сформирована UDP-команда для панели"
+        for line in udp_srv.stdout:
+            lines.append(line)
+            if line.strip() == "REMNA_PROBE":
+                break
+        udp_client = subprocess.run(["bash", "-c", "".join(lines)], capture_output=True, text=True, timeout=6, check=True)
+        assert f"{udp_port}/udp: обмен в обе стороны прошёл" in udp_client.stdout
+        udp_out, _ = udp_srv.communicate(timeout=4)
+        assert udp_srv.returncode == 0 and f"✓ {udp_port}/udp · обмен с 127.0.0.1 прошёл" in udp_out
+    finally:
+        if udp_srv.poll() is None:
+            udp_srv.kill()
+
+outbound = subprocess.run([sys.executable, str(PROBE), "--outbound", "127.0.0.1"],
+                          capture_output=True, text=True, timeout=6, check=True)
+assert "нода → 127.0.0.1 · маршрут и отклик подтверждены" in outbound.stdout
+
+print("Проверены обмен TCP/UDP в обе стороны, --outbound, неполный обмен, ограничение по IP и занятый порт.")
