@@ -131,10 +131,28 @@ security_normalize_vpn_ports() {
 }
 
 security_detect_vpn_ports() {
+    local configured
+    configured=$(security_configured_vpn_ports 2>/dev/null) || configured=
     LC_ALL=C ss -H -lntup | python3 -c '
 import ipaddress
+import pathlib
 import re
 import sys
+
+configured = set()
+for item in sys.argv[1].split():
+    if "/" in item:
+        p, proto = item.split("/", 1)
+        if p.isdecimal():
+            configured.add((int(p), proto))
+
+eph_low, eph_high = 32768, 60999
+try:
+    parts = pathlib.Path("/proc/sys/net/ipv4/ip_local_port_range").read_text().split()
+    if len(parts) == 2 and parts[0].isdecimal() and parts[1].isdecimal():
+        eph_low, eph_high = int(parts[0]), int(parts[1])
+except OSError:
+    pass
 
 vpn_ports, other_ports = set(), set()
 for line in sys.stdin:
@@ -144,6 +162,7 @@ for line in sys.stdin:
     address, _, port = fields[4].rpartition(":")
     if not port.isascii() or not port.isdecimal() or not 1 <= int(port) <= 65535:
         continue
+    port_num = int(port)
     address = address.strip("[]").split("%", 1)[0]
     if address != "*":
         try:
@@ -155,11 +174,15 @@ for line in sys.stdin:
         if bound.is_loopback or bound.is_link_local or bound.is_multicast:
             continue
     owners = re.findall(r"\(\"([^\"]+)\",pid=\d+,", fields[6] if len(fields) == 7 else "")
-    ports = vpn_ports if owners and set(owners) <= {"rw-core", "xray"} else other_ports
-    ports.add((int(port), fields[0]))
+    is_vpn = bool(owners and set(owners) <= {"rw-core", "xray"})
+    # Ignore outbound ephemeral UDP sockets allocated by xray/rw-core (ss -lu lists all UNCONN sockets).
+    if is_vpn and fields[0] == "udp" and eph_low <= port_num <= eph_high and (port_num, "udp") not in configured:
+        continue
+    ports = vpn_ports if is_vpn else other_ports
+    ports.add((port_num, fields[0]))
 
 print(" ".join(f"{port}/{protocol}" for port, protocol in sorted(vpn_ports - other_ports)))
-'
+' "$configured"
 }
 
 security_prompt_vpn_ports() {

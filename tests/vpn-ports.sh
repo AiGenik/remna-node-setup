@@ -39,6 +39,8 @@ tcp LISTEN 0 64 0.0.0.0:8080 0.0.0.0:* users:(("nginx",pid=98,fd=3))
 tcp LISTEN 0 64 192.0.2.4:9444 0.0.0.0:* users:(("rw-core",pid=100,fd=8))
 tcp LISTEN 0 64 192.0.2.5:9444 0.0.0.0:* users:(("nginx",pid=98,fd=4))
 tcp LISTEN 0 64 *:10443 *:* users:(("xray-other",pid=103,fd=7))
+udp UNCONN 0 0 *:45123 *:* users:(("rw-core",pid=100,fd=9))
+udp UNCONN 0 0 [::]:58901 [::]:* users:(("xray",pid=101,fd=10))
 SOCKETS
 }
 
@@ -100,6 +102,9 @@ for invalid in 65536 0 3003/tcp 2202 8443/tcp 80/tcp 9443/sctp '9443/tcp *'; do
     if security_normalize_vpn_ports "$invalid" >/dev/null 2>&1; then exit 1; fi
 done
 [[ $(security_detect_vpn_ports) == '2443/udp 9443/tcp' ]]
+VPN_PORTS='9443/tcp 45123/udp'
+[[ $(security_detect_vpn_ports) == '2443/udp 9443/tcp 45123/udp' ]]
+unset VPN_PORTS
 [[ $(security_prompt_vpn_ports '443/tcp' 2>/dev/null) == '2443/udp 9443/tcp' ]]
 VPN_PORTS_SAVED=yes
 [[ $(security_prompt_vpn_ports '443/tcp' 2>/dev/null) == '443/tcp' ]]
