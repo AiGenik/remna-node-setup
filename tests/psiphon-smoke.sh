@@ -12,7 +12,7 @@ trap 'rm -rf -- "$fixture"' EXIT
 STATE_DIR=$fixture
 _psiphon_environment="$fixture/vps-psiphon"
 
-[[ $(_psiphon_region auto) == "" && $(_psiphon_region de) == DE ]]
+[[ $(_psiphon_region auto) == "" && $(_psiphon_region de) == DE && $(_psiphon_region 'ca, nl, de') == 'CA,NL,DE' ]]
 if _psiphon_region 'DE; echo x' 2>/dev/null; then exit 1; fi
 psiphon_outbound 1080 | jq -e '
     .tag == "psiphon-out" and .protocol == "socks" and

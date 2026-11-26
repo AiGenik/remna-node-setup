@@ -36,7 +36,7 @@ psiphon_is_managed() {
         (.commit | test("^[a-f0-9]{40}$")) and
         (.version | test("^[0-9]+\\.[0-9]+(\\.[0-9]+)?$")) and
         (.image | test("^swarupsengupta2007/psiphon(@sha256:[a-f0-9]{64}|:[A-Za-z0-9._-]+)?$")) and
-        (.region | test("^(|[A-Z]{2})$")) and
+        (.region | test("^(|[A-Z]{2}(,[A-Z]{2})*)$")) and
         (.port | type == "number" and . >= 1 and . <= 65535 and . == floor)
     ' "$file" >/dev/null 2>&1
 }
@@ -52,14 +52,23 @@ _psiphon_existing_install() {
 }
 
 _psiphon_region() {
-    local region
-    region=$(LC_ALL=C tr '[:lower:]' '[:upper:]' <<< "$1") || return 1
-    case $region in
-        AUTO|'') printf '\n' ;;
-        AE|AR|AT|AU|BE|BG|BR|CA|CH|CL|CO|CZ|DE|DK|EE|ES|FI|FR|GB|GR|HK|HR|HU|ID|IE|IN|IS|IT|JP|KE|KR|LT|LV|MX|MY|NL|NO|NZ|PL|PT|RO|RS|SE|SG|SK|TW|UA|US|ZA)
-            printf '%s\n' "$region" ;;
-        *) fail 'Укажите auto или код страны из списка Psiphon, например DE, NL, US.' ;;
-    esac
+    local raw part out=''
+    local -a items=()
+    raw=$(LC_ALL=C tr '[:lower:]' '[:upper:]' <<< "$1") || return 1
+    if [[ -z $raw || $raw == AUTO ]]; then
+        printf '\n'
+        return 0
+    fi
+    IFS=',' read -ra items <<< "$raw"
+    for part in "${items[@]}"; do
+        part=${part//[[:space:]]/}
+        case $part in
+            AE|AR|AT|AU|BE|BG|BR|CA|CH|CL|CO|CZ|DE|DK|EE|ES|FI|FR|GB|GR|HK|HR|HU|ID|IE|IN|IS|IT|JP|KE|KR|LT|LV|MX|MY|NL|NO|NZ|PL|PT|RO|RS|SE|SG|SK|TW|UA|US|ZA)
+                out+=${out:+,}$part ;;
+            *) fail 'Укажите auto или коды стран из списка Psiphon (например CA или CA,NL,DE).'; return 1 ;;
+        esac
+    done
+    printf '%s\n' "$out"
 }
 
 _psiphon_default_port() {
@@ -141,8 +150,10 @@ _psiphon_env_region() {
 }
 
 _psiphon_verify() {
-    local region=$1 port=$2 image=$3 config actual
+    local region=${1%%,*} port=$2 image=$3 config actual
     systemctl is-active --quiet "$_psiphon_service" || return 1
+    systemctl is-enabled --quiet "$_psiphon_timer" || return 1
+    systemctl is-active --quiet "$_psiphon_timer" || return 1
     _psiphon_port_bindings_ok "$port" || return 1
     [[ -f $_psiphon_environment && ! -L $_psiphon_environment ]] &&
         [[ $(stat -c '%u %a' -- "$_psiphon_environment") == '0 600' ]] || return 1
@@ -320,11 +331,6 @@ _psiphon_install() (
         for path in "${_psiphon_install_paths[@]}"; do
             [[ ! -L $path ]] || { fail "Обнаружена сторонняя ссылка $path."; return 1; }
         done
-        if [[ $(active "$_psiphon_timer") == yes || $(enabled "$_psiphon_timer") == yes ||
-              $(active "$_psiphon_watchdog") == yes ]]; then
-            fail 'Перед настройкой отключите вручную запущенный watchdog Psiphon.'
-            return 1
-        fi
     elif _psiphon_existing_install; then
         fail 'Обнаружен сторонний vps-psiphon. Сохранены его файлы и сервис.'
         return 1
@@ -347,13 +353,23 @@ _psiphon_install() (
     IFS=$'\t' read -r target_version target_commit target_image <<< "$resolved"
     path_snapshot "$stage" "${_psiphon_install_paths[@]}" || return 1
     touched=yes
-    info "Настраивается Psiphon $target_version. Ожидание туннеля может занять до двух минут."
+    info "Настраивается Psiphon $target_version (автосмена региона включена, 0 ГБ фонового трафика). Ожидание туннеля до 2 минут."
     if ! env -u DOCKER_HOST -u DOCKER_CONTEXT -u BASH_ENV -u ENV -u NAME -u HTTP_PORT -u DEVICE_REGION \
         bash "$stage/install.sh" --region "$region" --socks-port "$port" --bind-loopback \
-        --no-watchdog --no-impersonate --no-http --tunnel-pool 1 --image "$target_image" \
+        --bulk-test-mb 0 --no-impersonate --no-http --tunnel-pool 1 --image "$target_image" \
         > "$stage/install.log" 2>&1; then
         tail -n 10 -- "$stage/install.log" >&2
         return 1
+    fi
+    if [[ -f $_psiphon_environment && ! -L $_psiphon_environment ]]; then
+        sed -i -E \
+            -e 's/^MIN_THROUGHPUT_KBPS=.*/MIN_THROUGHPUT_KBPS=0/' \
+            -e "s/^DENY_REGIONS=.*/DENY_REGIONS='RU BY IR SY CU KP CN VE'/" \
+            "$_psiphon_environment"
+        if grep -Eq "^REGION_POOL=''\$" "$_psiphon_environment"; then
+            sed -i -E "s/^REGION_POOL=.*/REGION_POOL='CA NL DE SE FI GB US'/" "$_psiphon_environment"
+        fi
+        chmod 0600 -- "$_psiphon_environment"
     fi
     _psiphon_verify "$region" "$port" "$target_image" ||
         { fail 'Не удалось подтвердить безопасную конфигурацию SOCKS5 Psiphon.'; return 1; }
@@ -471,5 +487,10 @@ psiphon_status() {
         info "Psiphon работает · SOCKS5 127.0.0.1:$port · регион ${region:-auto}."
     else
         info "Psiphon запущен · SOCKS5 127.0.0.1:$port · туннель ещё не подтверждён."
+    fi
+    if systemctl is-active --quiet "$_psiphon_timer" 2>/dev/null; then
+        info 'Автосмена Psiphon (watchdog) · активна (защита от RU и отказа Gemini).'
+    else
+        warn "Таймер $_psiphon_timer неактивен — автопереключение региона выключено."
     fi
 }
