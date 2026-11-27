@@ -169,11 +169,49 @@ _psiphon_verify() {
         _psiphon_socks_ready "$port"
 }
 
+_psiphon_env_port() {
+    local port=''
+    if [[ -f $_psiphon_environment && ! -L $_psiphon_environment ]]; then
+        port=$(awk -F= '/^SOCKS_PORT=/{print $2; exit}' "$_psiphon_environment" 2>/dev/null) || port=''
+        port=${port%\"}
+        port=${port#\"}
+        port=${port%\'}
+        port=${port#\'}
+    fi
+    if valid_port "${port:-}"; then
+        printf '%s\n' "$port"
+    else
+        printf '1080\n'
+    fi
+}
+
+_psiphon_env_version() {
+    local line=''
+    [[ -f $_psiphon_environment && ! -L $_psiphon_environment ]] || return 1
+    IFS= read -r line < "$_psiphon_environment" || return 1
+    if [[ $line =~ psiphon_install\.sh[[:space:]]+v?([0-9]+\.[0-9]+(\.[0-9]+)?) ]]; then
+        printf '%s\n' "${BASH_REMATCH[1]}"
+        return 0
+    fi
+    return 1
+}
+
+psiphon_active_port() {
+    if psiphon_is_managed; then
+        jq -er '.port' "$(_psiphon_marker)"
+        return
+    fi
+    if _psiphon_existing_install; then
+        _psiphon_env_port
+        return 0
+    fi
+    return 1
+}
+
 psiphon_outbound() {
     local port=${1:-}
     if [[ -z $port ]]; then
-        psiphon_is_managed || { fail 'Сначала настройте Psiphon.'; return 1; }
-        port=$(jq -er '.port' "$(_psiphon_marker)") || return 1
+        port=$(psiphon_active_port) || { fail 'Сначала настройте Psiphon.'; return 1; }
     fi
     valid_port "$port" || { fail 'Укажите корректный порт SOCKS5.'; return 1; }
     jq -n --argjson port "$port" '{
@@ -468,11 +506,59 @@ psiphon_update() {
     info "Psiphon обновлён до проверенного выпуска $PSIPHON_UPSTREAM_VERSION."
 }
 
+psiphon_update_action() {
+    if psiphon_is_managed; then
+        psiphon_update
+        return
+    fi
+    if _psiphon_existing_install; then
+        local cur='' lat=''
+        cur=$(_psiphon_env_version 2>/dev/null || printf 'неизвестна')
+        lat=$(psiphon_latest_version 2>/dev/null || printf 'недоступно')
+        psiphon_status || :
+        info "Установлен внешний vps-psiphon ($cur, актуальный релиз: ${lat#v})."
+        info 'Обновляйте его через штатный установщик vps-psiphon или переустановите как управляемый модуль.'
+        return 0
+    fi
+    info 'Psiphon не установлен.'
+}
+
 psiphon_status() {
     local marker region port image logs count
     if ! psiphon_is_managed; then
         if _psiphon_existing_install; then
-            info 'Psiphon установлен отдельно и обслуживается его собственным интерфейсом.'
+            local ext_port ext_region='' ext_ver='' bind='' bulk=''
+            ext_port=$(_psiphon_env_port)
+            ext_region=$(_psiphon_env_region 2>/dev/null || :)
+            ext_ver=$(_psiphon_env_version 2>/dev/null || :)
+            if [[ -f $_psiphon_environment && ! -L $_psiphon_environment ]]; then
+                bind=$(awk -F= '/^BIND=/{print $2; exit}' "$_psiphon_environment" 2>/dev/null || :)
+                bulk=$(awk -F= '/^BULK_TEST_MB=/{print $2; exit}' "$_psiphon_environment" 2>/dev/null || :)
+            fi
+            if systemctl is-active --quiet "$_psiphon_service" 2>/dev/null && _psiphon_socks_ready "$ext_port"; then
+                logs=$(_node_docker logs --tail 150 vps-psiphon 2>&1) || logs=
+                count=$(jq -Rnr '[inputs | fromjson? | select(.noticeType == "Tunnels") | .data.count] | last // 0' <<< "$logs" 2>/dev/null) ||
+                    count=0
+                if [[ $count =~ ^[1-9][0-9]*$ ]]; then
+                    info "Psiphon (внешний${ext_ver:+, $ext_ver}) работает · SOCKS5 ${bind:-127.0.0.1}:$ext_port · регион ${ext_region:-auto}."
+                else
+                    info "Psiphon (внешний${ext_ver:+, $ext_ver}) запущен · SOCKS5 ${bind:-127.0.0.1}:$ext_port · регион ${ext_region:-auto}."
+                fi
+                if [[ -n $bind && $bind != 127.0.0.1 ]]; then
+                    warn "Psiphon слушает на $bind вместо 127.0.0.1 — проверьте безопасность порта $ext_port."
+                fi
+                if [[ $bulk =~ ^[1-9][0-9]*$ ]]; then
+                    warn "У Psiphon включён BULK_TEST_MB=$bulk (фоновый расход трафика)."
+                fi
+                if systemctl is-active --quiet "$_psiphon_timer" 2>/dev/null; then
+                    info 'Автосмена Psiphon (watchdog) · активна.'
+                else
+                    warn "Таймер $_psiphon_timer неактивен — автопереключение региона выключено."
+                fi
+                return 0
+            fi
+            warn "Psiphon (внешний${ext_ver:+, $ext_ver}): сервис или SOCKS5 127.0.0.1:$ext_port недоступен."
+            return 1
         else
             info 'Psiphon не установлен.'
         fi

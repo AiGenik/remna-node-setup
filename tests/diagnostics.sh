@@ -4,6 +4,8 @@ set -euo pipefail
 PROJECT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 # shellcheck source=lib/common.sh
 source "$PROJECT_DIR/lib/common.sh"
+# shellcheck source=lib/security.sh
+source "$PROJECT_DIR/lib/security.sh"
 # shellcheck source=lib/manager.sh
 source "$PROJECT_DIR/lib/manager.sh"
 # shellcheck source=lib/selfsteal.sh
@@ -75,7 +77,13 @@ dns=yes
 fail2ban-client() {
     case "$*" in
         'status sshd') return 0 ;;
-        'get sshd banaction') printf 'iptables-multiport[blocktype=DROP]\n' ;;
+        -d)
+            printf "['set', 'sshd', 'addaction', 'iptables-multiport']\n"
+            printf "['set', 'sshd', 'action', 'iptables-multiport', 'blocktype', 'DROP']\n"
+            ;;
+        'get sshd banaction')
+            printf 'Invalid command (no get action or not yet implemented)\n'
+            ;;
         *) return 1 ;;
     esac
 }
@@ -94,6 +102,8 @@ printf '%s\n' 'ok — Gemini replies, and places this exit in Canada'
 GEM
 chmod +x "$PSIPHON_GEMINI_CHECK_BIN"
 audit_out=$(audit_live)
+grep -Fq 'iptables-multiport[blocktype=DROP]' <<< "$audit_out"
+if grep -Fq 'Invalid command' <<< "$audit_out"; then exit 1; fi
 grep -Fq 'Certbot dry-run' <<< "$audit_out"
 grep -Fq '198.51.100.77' <<< "$audit_out"
 grep -Fq 'сообщение отправлено и ответ получен' <<< "$audit_out"

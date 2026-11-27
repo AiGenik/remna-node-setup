@@ -9,6 +9,7 @@ shellcheck -x "${shell_files[@]}"
 ./tests/ssh-settings.sh
 ./tests/selfsteal-settings.sh
 ./tests/standalone-settings.sh
+./tests/legacy-compat.sh
 bash tests/ssh-launcher.sh </dev/null
 bash tests/apt-packages.sh
 bash tests/vpn-port-migration.sh

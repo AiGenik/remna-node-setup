@@ -410,6 +410,44 @@ ui_menu_status() (
             fi
         elif [[ -s ${CONFIG_DIR:-/etc/remna-node-setup}/host.json ]]; then
             configured='Компоненты настроены · ноды пока нет'
+            if declare -F _node_external_inspect >/dev/null && _node_external_inspect; then
+                mark='●'
+                color=${UI_OK:-$UI_BOLD}
+                configured='Внешняя нода'
+                if valid_port "${_NODE_EXT_PORT:-}"; then
+                    address="${_NODE_EXT_PORT}/tcp"
+                    if declare -F _selfsteal_external_detect >/dev/null && _selfsteal_external_detect; then
+                        address="$_SELFSTEAL_EXT_DOMAIN · $address"
+                    fi
+                    if (( ${#address} + 19 <= UI_RULE_WIDTH )); then configured="Внешняя нода · $address"; fi
+                fi
+            fi
+        elif declare -F _node_external_inspect >/dev/null && _node_external_inspect; then
+            mark='●'
+            color=${UI_OK:-$UI_BOLD}
+            configured='Внешняя нода (не в мастере)'
+            if valid_port "${_NODE_EXT_PORT:-}"; then
+                address="${_NODE_EXT_PORT}/tcp"
+                if declare -F _selfsteal_external_detect >/dev/null && _selfsteal_external_detect; then
+                    address="$_SELFSTEAL_EXT_DOMAIN · $address"
+                fi
+                if (( ${#address} + 19 <= UI_RULE_WIDTH )); then configured="Внешняя нода · $address"; fi
+            fi
+        fi
+        if [[ $UI_COMPACT != yes && -z $badges && $mark == '●' ]]; then
+            if declare -F security_ufw_active >/dev/null && security_ufw_active 2>/dev/null; then
+                badges+='UFW '
+            fi
+            if declare -F traffic_guard_firewall_active >/dev/null && traffic_guard_firewall_active 2>/dev/null; then
+                badges+='· TG '
+            fi
+            if declare -F _psiphon_existing_install >/dev/null && _psiphon_existing_install 2>/dev/null; then
+                badges+='· Psiphon '
+            fi
+            if [[ -r /proc/sys/net/ipv6/conf/all/disable_ipv6 && $(< /proc/sys/net/ipv6/conf/all/disable_ipv6) == 1 ]]; then
+                badges+='· IPv4-only'
+            fi
+            badges=${badges#· }
         fi
         printf '  %s%s%s  %s%s%s\n' "$color" "$mark" "$UI_RESET" "$UI_BOLD" "$configured" "$UI_RESET"
         if [[ -n $badges ]]; then

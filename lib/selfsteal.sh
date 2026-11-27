@@ -155,8 +155,79 @@ https://$domain:8443 {
 EOF_CADDY
 }
 
+_selfsteal_external_detect() {
+    _SELFSTEAL_EXT_SERVER=
+    _SELFSTEAL_EXT_CONFIG=
+    _SELFSTEAL_EXT_DOMAIN=
+
+    local parsed=''
+    parsed=$(python3 - "${_nginx_selfsteal_config:-/etc/nginx/conf.d/remna-node-setup.conf}" "$_selfsteal_caddyfile" \
+        "${SELFSTEAL_NGINX_CONF_DIR:-/etc/nginx/conf.d}" "${SELFSTEAL_NGINX_SITES_DIR:-/etc/nginx/sites-enabled}" \
+        "${SELFSTEAL_RENEWAL_DIR:-/etc/letsencrypt/renewal}" <<'PY'
+import glob
+import os
+import re
+import sys
+from pathlib import Path
+
+managed_nginx, caddyfile, conf_dir, sites_dir, _ = sys.argv[1:6]
+candidates = sorted(glob.glob(os.path.join(conf_dir, "*.conf")) + glob.glob(os.path.join(sites_dir, "*")))
+for raw_path in candidates:
+    if raw_path == managed_nginx:
+        continue
+    path = Path(raw_path)
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        continue
+    if "8443" not in text:
+        continue
+    for block in re.split(r"(?m)(?=^\s*server\s*\{)", text):
+        if not re.search(r"listen\s+[^;]*:8443\b[^;]*ssl", block):
+            continue
+        m_name = re.search(r"server_name\s+([^;]+);", block)
+        if not m_name:
+            continue
+        for tok in m_name.group(1).split():
+            tok = tok.strip().lower().rstrip(".")
+            if tok and tok != "_" and tok != "localhost" and "." in tok:
+                print(f"nginx\t{raw_path}\t{tok}")
+                sys.exit(0)
+
+cpath = Path(caddyfile)
+if cpath.is_file():
+    try:
+        ctext = cpath.read_text(encoding="utf-8", errors="replace")
+        m_cad = re.search(r"(?m)^\s*(?:https://)?([a-z0-9][a-z0-9.-]*\.[a-z][a-z0-9-]*):8443\b", ctext, re.I)
+        if m_cad:
+            print(f"caddy\t{caddyfile}\t{m_cad.group(1).lower()}")
+            sys.exit(0)
+    except OSError:
+        pass
+sys.exit(1)
+PY
+    ) || return 1
+    IFS=$'\t' read -r _SELFSTEAL_EXT_SERVER _SELFSTEAL_EXT_CONFIG _SELFSTEAL_EXT_DOMAIN <<< "$parsed"
+    [[ -n $_SELFSTEAL_EXT_SERVER && -n $_SELFSTEAL_EXT_DOMAIN ]]
+}
+
+_selfsteal_external_renewal_active() {
+    local renewal_dir=${SELFSTEAL_RENEWAL_DIR:-/etc/letsencrypt/renewal}
+    if systemctl is-enabled --quiet certbot.timer 2>/dev/null && systemctl is-active --quiet certbot.timer 2>/dev/null; then
+        return 0
+    fi
+    if [[ -s /etc/cron.d/certbot ]]; then
+        return 0
+    fi
+    if [[ -d $renewal_dir ]] && find "$renewal_dir" -maxdepth 1 -name '*.conf' -print -quit | grep -q .; then
+        return 1
+    fi
+    return 0
+}
+
 _selfsteal_verify_https() {
-    local domain=${NODE_DOMAIN%.}
+    local domain=${1:-${NODE_DOMAIN:-}}
+    domain=${domain%.}
     curl --fail --silent --noproxy '*' --max-time 3 \
         --resolve "$domain:8443:127.0.0.1" "https://$domain:8443/" >/dev/null
 }
@@ -238,18 +309,34 @@ selfsteal_refresh_redirect() {
 
 selfsteal_status() {
     local name=Caddy
-    if [[ $SELFSTEAL_SERVER == nginx ]]; then name=Nginx; fi
+    if [[ ${SELFSTEAL_SERVER:-} == nginx ]]; then name=Nginx; fi
     if ! _selfsteal_caddy_owned_config && ! _selfsteal_nginx_owned_config; then
+        if _selfsteal_external_detect; then
+            local ext_name=Caddy
+            if [[ $_SELFSTEAL_EXT_SERVER == nginx ]]; then ext_name=Nginx; fi
+            if systemctl is-active --quiet "${_SELFSTEAL_EXT_SERVER}.service" 2>/dev/null &&
+                _selfsteal_verify_https "$_SELFSTEAL_EXT_DOMAIN"; then
+                info "Self-steal (внешний, $_SELFSTEAL_EXT_CONFIG): $ext_name отвечает на $_selfsteal_endpoint по HTTPS ($_SELFSTEAL_EXT_DOMAIN)."
+            else
+                warn "Self-steal (внешний, $_SELFSTEAL_EXT_CONFIG): $ext_name или сертификат для $_SELFSTEAL_EXT_DOMAIN недоступен."
+                return 1
+            fi
+            if [[ $_SELFSTEAL_EXT_SERVER == nginx ]] && ! _selfsteal_external_renewal_active; then
+                warn 'Автопродление сертификата Certbot (certbot.timer / cron) не подтверждено.'
+                return 1
+            fi
+            return 0
+        fi
         fail 'Отсутствует управляемый конфиг self-steal.'
         return 1
     fi
     if selfsteal_verify; then
         info "Self-steal: $name отвечает на $_selfsteal_endpoint по HTTPS."
     else
-        warn "Self-steal: $name или доверенный сертификат для $NODE_DOMAIN недоступен."
+        warn "Self-steal: $name или доверенный сертификат для ${NODE_DOMAIN:-домена} недоступен."
         return 1
     fi
-    if [[ $SELFSTEAL_SERVER == nginx ]] && ! nginx_selfsteal_renewal_active; then
+    if [[ ${SELFSTEAL_SERVER:-} == nginx ]] && ! nginx_selfsteal_renewal_active; then
         fail 'Таймер продления сертификата Nginx не работает.'
         return 1
     fi

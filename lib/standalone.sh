@@ -183,7 +183,12 @@ standalone_traffic_guard() {
     local consent
     _standalone_load || return
     if ! security_ufw_active; then
-        fail 'Сначала включите UFW в разделе «Порты и защита».'
+        fail 'Сначала включите UFW в разделе [2] → [3] «Порты, UFW и защита SSH».'
+        return 1
+    fi
+    if [[ ! -f $STATE_DIR/traffic-guard/version ]] &&
+       declare -F _traffic_guard_external_present >/dev/null && _traffic_guard_external_present; then
+        fail 'Обнаружен ранее настроенный TrafficGuard или общий /etc/ipset.conf.'
         return 1
     fi
     apt_install_missing ca-certificates curl python3 ipset iptables && get_admin_ip || return

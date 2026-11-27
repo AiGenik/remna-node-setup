@@ -380,19 +380,149 @@ node_restore_runtime() {
     return 0
 }
 
+_node_compose_paths() {
+    local candidate
+    for candidate in /opt/remnanode/docker-compose.yml /opt/remnanode/docker-compose.yaml \
+        /opt/remnanode/compose.yaml /opt/remnanode/compose.yml; do
+        if [[ -f $candidate && ! -L $candidate ]]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+_node_external_compose_parse() {
+    local compose_file=$1
+    [[ -r $compose_file ]] || return 1
+    python3 - "$compose_file" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8", errors="replace")
+image = ""
+port = ""
+
+m_img = re.search(r"(?m)^[ \t]*image:[ \t]*['\"]?([^\s'\"#]+)", text)
+if m_img:
+    image = m_img.group(1).strip()
+
+for pat in (
+    r"(?m)^[ \t]*-?[ \t]*['\"]?NODE_PORT[ \t]*[=:][ \t]*['\"]?([0-9]{1,5})",
+    r"(?m)^[ \t]*-[ \t]*['\"]?[0-9.:]*:([0-9]{1,5}):[0-9]{1,5}",
+):
+    m_port = re.search(pat, text)
+    if m_port:
+        port = m_port.group(1).strip()
+        break
+
+if not port:
+    env_file = path.parent / ".env"
+    if env_file.is_file():
+        env_text = env_file.read_text(encoding="utf-8", errors="replace")
+        m_env = re.search(r"(?m)^[ \t]*NODE_PORT=([0-9]{1,5})\b", env_text)
+        if m_env:
+            port = m_env.group(1).strip()
+
+print(f"{image}\t{port}")
+PY
+}
+
+_node_external_inspect() {
+    _NODE_EXT_STATUS=
+    _NODE_EXT_IMAGE=
+    _NODE_EXT_VERSION=
+    _NODE_EXT_PORT=
+    _NODE_EXT_COMPOSE=
+    _NODE_EXT_DIR=
+
+    local meta status='' cfg_files='' image='' port='' parsed='' parsed_img='' parsed_port=''
+    if command -v docker >/dev/null 2>&1; then
+        meta=$(_node_docker container inspect --format \
+            '{{.State.Status}}{{"\t"}}{{index .Config.Labels "com.docker.compose.project.config_files"}}{{"\t"}}{{.Config.Image}}{{"\n"}}{{range .Config.Env}}{{println .}}{{end}}' \
+            remnanode 2>/dev/null) || meta=''
+        if [[ -n $meta ]]; then
+            local line
+            line=${meta%%$'\n'*}
+            IFS=$'\t' read -r status cfg_files image <<< "$line"
+            port=$(awk -F= '$1 == "NODE_PORT" {print $2; exit}' <<< "$meta") || port=
+            if [[ -n $image ]]; then
+                _NODE_EXT_VERSION=$(_node_pinned_image_version "$image" 2>/dev/null || :)
+                if [[ -z $_NODE_EXT_VERSION ]]; then
+                    _NODE_EXT_VERSION=$(_node_docker image inspect --format \
+                        '{{index .Config.Labels "org.opencontainers.image.version"}}' "$image" 2>/dev/null || :)
+                    _NODE_EXT_VERSION=${_NODE_EXT_VERSION#v}
+                    [[ $_NODE_EXT_VERSION != '<no value>' ]] || _NODE_EXT_VERSION=
+                fi
+                if [[ -z $_NODE_EXT_VERSION && $image == *:* ]]; then
+                    local tag=${image##*:}
+                    tag=${tag%%@*}
+                    if [[ $tag != latest && -n $tag ]]; then _NODE_EXT_VERSION=${tag#v}; fi
+                fi
+            fi
+        fi
+    fi
+
+    if [[ -n $cfg_files && -f ${cfg_files%%,*} ]]; then
+        _NODE_EXT_COMPOSE=${cfg_files%%,*}
+    else
+        _NODE_EXT_COMPOSE=$(_node_compose_paths 2>/dev/null || :)
+    fi
+    if [[ -n $_NODE_EXT_COMPOSE ]]; then
+        _NODE_EXT_DIR=${_NODE_EXT_COMPOSE%/*}
+        if [[ -z $image || -z $port ]]; then
+            parsed=$(_node_external_compose_parse "$_NODE_EXT_COMPOSE" 2>/dev/null || :)
+            IFS=$'\t' read -r parsed_img parsed_port <<< "$parsed"
+            [[ -n $image ]] || image=$parsed_img
+            [[ -n $port ]] || port=$parsed_port
+        fi
+        if [[ -z $_NODE_EXT_VERSION && -n $image ]]; then
+            _NODE_EXT_VERSION=$(_node_pinned_image_version "$image" 2>/dev/null || :)
+            if [[ -z $_NODE_EXT_VERSION && $image == *:* ]]; then
+                local ftag=${image##*:}
+                ftag=${ftag%%@*}
+                if [[ $ftag != latest && -n $ftag ]]; then _NODE_EXT_VERSION=${ftag#v}; fi
+            fi
+        fi
+    fi
+
+    _NODE_EXT_STATUS=$status
+    _NODE_EXT_IMAGE=$image
+    _NODE_EXT_PORT=$port
+    [[ -n $status || -n $_NODE_EXT_COMPOSE || -e /opt/remnanode ]]
+}
+
+node_external_verify() {
+    local listeners
+    _node_external_inspect || return 1
+    [[ $_NODE_EXT_STATUS == running ]] && valid_port "${_NODE_EXT_PORT:-}" || return 1
+    listeners=$(ss -H -ltnp "sport = :$_NODE_EXT_PORT" 2>/dev/null) || return 1
+    _node_owns_listeners "$listeners"
+}
+
+node_any_verify() {
+    if _node_owned_config; then
+        node_verify
+    else
+        node_external_verify
+    fi
+}
+
 node_status() {
-    local image version port existing
+    local image version port
     if ! _node_owned_config; then
-        existing=""
-        if command -v docker >/dev/null; then
-            existing=$(_node_docker container inspect --format '{{.State.Status}}' remnanode 2>/dev/null) ||
-                existing=""
+        if _node_external_inspect; then
+            local loc=${_NODE_EXT_DIR:-/opt/remnanode}
+            if node_external_verify; then
+                info "Нода (внешняя, $loc)${_NODE_EXT_VERSION:+ · $_NODE_EXT_VERSION}${_NODE_EXT_PORT:+ · TCP $_NODE_EXT_PORT} · работает."
+                return 0
+            fi
+            warn "Нода (внешняя, $loc): контейнер ${_NODE_EXT_STATUS:-не запущен}${_NODE_EXT_PORT:+ или порт $_NODE_EXT_PORT недоступен}."
+            return 1
         fi
-        if [[ -n $existing || -e /opt/remnanode ]]; then
-            warn "Найдена сторонняя нода${existing:+ ($existing)}. См. раздел о существующей ноде в документации."
-        else
-            info "Управляемая нода не установлена."
-        fi
+        info "Управляемая нода не установлена."
         if [[ ${1-} == required ]]; then return 1; fi
         return 0
     fi
@@ -407,20 +537,42 @@ node_status() {
     fi
 }
 
+_node_filter_secret_stream() {
+    local secret=${1:-}
+    python3 -uc '
+import sys
+
+secret = sys.argv[1]
+for line in sys.stdin:
+    sys.stdout.write(line.replace(secret, "[скрыто]") if secret else line)
+' "$secret"
+}
+
 node_logs() {
     local lines=${1:-100}
     if [[ ! $lines =~ ^[0-9]{1,4}$ ]]; then
         fail "Укажите число строк логов от 0 до 9999."
         return 1
     fi
-    _node_owned_config || { fail "Управляемая нода не найдена."; return 1; }
-    _node_compose logs --no-color --tail "$lines" remnanode 2>&1 |
-        python3 -uc '
-import sys
-from pathlib import Path
-
-secret = Path(sys.argv[1]).read_text().strip("\r\n")
-for line in sys.stdin:
-    sys.stdout.write(line.replace(secret, "[скрыто]") if secret else line)
-' "$CONFIG_DIR/node.secret"
+    if _node_owned_config; then
+        local secret=''
+        if [[ -s $CONFIG_DIR/node.secret ]]; then
+            secret=$(<"$CONFIG_DIR/node.secret") || secret=''
+            secret=${secret%$'\r'}
+            secret=${secret%$'\n'}
+        fi
+        _node_compose logs --no-color --tail "$lines" remnanode 2>&1 |
+            _node_filter_secret_stream "$secret"
+        return
+    fi
+    if command -v docker >/dev/null 2>&1 && _node_docker container inspect remnanode >/dev/null 2>&1; then
+        local ext_secret=''
+        ext_secret=$(_node_docker container inspect --format '{{range .Config.Env}}{{println .}}{{end}}' remnanode 2>/dev/null |
+            awk -F= '$1 == "SECRET_KEY" { sub(/^[^=]*=/, ""); print; exit }') || ext_secret=''
+        _node_docker logs --tail "$lines" remnanode 2>&1 |
+            _node_filter_secret_stream "$ext_secret"
+        return
+    fi
+    fail "Управляемая нода не найдена."
+    return 1
 }

@@ -48,7 +48,10 @@ port_preflight() {
             fi
         else
             info "  $entry · $label · слушает"
-            if [[ $entry == "$node_port/tcp" ]] && _node_owns_listeners "$listeners" && node_verify; then running_node=yes; fi
+            if [[ $entry == "$node_port/tcp" ]] && _node_owns_listeners "$listeners" &&
+               { if declare -F node_any_verify >/dev/null; then node_any_verify; else node_verify; fi; }; then
+                running_node=yes
+            fi
             if [[ $protocol == tcp && $label == VPN ]]; then
                 busy_ports+=("$port")
             fi
@@ -145,8 +148,26 @@ port_preflight() {
 }
 
 standalone_port_preflight() {
-    local default_vpn='' port
-    if [[ -e $CONFIG_DIR/node.json ]]; then load_config || return; else _standalone_load || return; fi
+    local default_vpn='' port detected_vpn='' has_external=no
+    if [[ -e $CONFIG_DIR/node.json ]]; then
+        load_config || return
+    else
+        _standalone_load || return
+        if declare -F _node_external_inspect >/dev/null && ! _node_owned_config && _node_external_inspect; then
+            has_external=yes
+            if valid_port "${_NODE_EXT_PORT:-}"; then NODE_PORT=$_NODE_EXT_PORT; fi
+        fi
+        if [[ -z $NODE_DOMAIN ]] && declare -F _selfsteal_external_detect >/dev/null && _selfsteal_external_detect; then
+            has_external=yes
+            NODE_DOMAIN=$_SELFSTEAL_EXT_DOMAIN
+        fi
+        if [[ -z $PANEL_IPS && -n $NODE_PORT ]] && declare -F security_ufw_panel_ips_for_port >/dev/null; then
+            PANEL_IPS=$(security_ufw_panel_ips_for_port "$NODE_PORT" 2>/dev/null || :)
+        fi
+        if [[ $has_external == yes ]]; then
+            detected_vpn=$(security_detect_vpn_ports 2>/dev/null || :)
+        fi
+    fi
     NODE_PORT=${NODE_PORT:-2222}
     if [[ $UI_INTERACTIVE == yes ]]; then
         NODE_PORT=$(wizard_input 'Node Port из карточки ноды' "$NODE_PORT" check_node_port) || return
@@ -154,7 +175,7 @@ standalone_port_preflight() {
     for port in 443 9443; do
         if [[ $port != "$NODE_PORT" && $port != "${SSH_PORT:-22}" ]]; then default_vpn+=${default_vpn:+ }$port/tcp; fi
     done
-    default_vpn=${VPN_PORTS:-$default_vpn}
+    default_vpn=${VPN_PORTS:-${detected_vpn:-$default_vpn}}
     if [[ $UI_INTERACTIVE == yes ]]; then
         VPN_PORTS=$(wizard_input 'Порты VPN (TCP/UDP)' "${default_vpn:-нет}" security_normalize_vpn_ports) || return
     else

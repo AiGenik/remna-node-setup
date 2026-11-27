@@ -491,7 +491,7 @@ security_vpn_status() {
         read -r -a entries <<< "$detected"
         for entry in "${entries[@]}"; do
             if ! security_ufw_public_rule "$entry" "$rules"; then
-                warn "Для $entry не найдено отдельное публичное разрешение UFW. Проверьте «Порты и защита»."
+                warn "Для $entry не найдено отдельное публичное разрешение UFW. Проверьте [2] → [3] «Порты, UFW и защита SSH»."
                 result=1
             fi
         done
@@ -510,15 +510,120 @@ security_ufw_managed() {
     grep -Eq '# remna-node-setup:ssh([[:space:]]|$)' <<< "$rules"
 }
 
+security_ufw_has_deny_incoming() {
+    local status
+    status=$(LC_ALL=C ufw status verbose 2>/dev/null) || return 1
+    grep -Fq 'Default: deny (incoming),' <<< "$status"
+}
+
+security_ufw_panel_ips_for_port() {
+    local port=$1 rules
+    valid_port "${port:-}" || return 1
+    security_ufw_active || return 1
+    rules=$(LC_ALL=C ufw status 2>/dev/null) || return 1
+    awk -v port="$port" '
+        ($1 == port || $1 == port "/tcp") && $0 !~ /\(v6\)/ && $0 ~ /[[:space:]]ALLOW([[:space:]]+IN)?[[:space:]]+/ {
+            ip = ""
+            for (i = 2; i <= NF; i++) {
+                if ($i ~ /^#/) break
+                if (($i == "IN" || $i == "ALLOW") && i + 1 <= NF && $(i + 1) !~ /^#/) {
+                    ip = $(i + 1)
+                }
+            }
+            if (ip != "" && ip != "IN" && ip != "Anywhere" && !seen[ip]++) out = (out ? out " " : "") ip
+        }
+        END { if (out != "") print out }
+    ' <<< "$rules"
+}
+
+security_fail2ban_action() {
+    local dump actions='' blocktype='' action=''
+    command -v fail2ban-client >/dev/null 2>&1 || return 1
+    dump=$(fail2ban-client -d 2>/dev/null || :)
+    if [[ -n $dump && $dump != *'Invalid command'* ]]; then
+        action=$(python3 - "$dump" <<'PY'
+import ast
+import sys
+
+actions = []
+blocktypes = {}
+for line in sys.argv[1].splitlines():
+    line = line.strip()
+    if not line.startswith("["):
+        continue
+    try:
+        item = ast.literal_eval(line)
+    except (SyntaxError, ValueError):
+        continue
+    if not isinstance(item, list) or len(item) < 4 or item[0] != "set" or item[1] != "sshd":
+        continue
+    if item[2] == "addaction" and isinstance(item[3], str):
+        actions.append(item[3])
+    elif item[2] == "action" and len(item) >= 6 and item[4] == "blocktype":
+        blocktypes[item[3]] = str(item[5])
+
+if actions:
+    act = actions[0]
+    bt = blocktypes.get(act, "")
+    print(f"{act}[blocktype={bt}]" if bt else act)
+PY
+        ) || action=''
+    fi
+    if [[ -z $action ]]; then
+        actions=$(fail2ban-client get sshd actions 2>/dev/null | grep -v 'Invalid command' || :)
+        action=$(awk '
+            !/^The jail/ && NF {
+                for (i = 1; i <= NF; i++) {
+                    gsub(/,/, "", $i)
+                    if ($i != "") { print $i; exit }
+                }
+            }
+        ' <<< "$actions")
+    fi
+    if [[ -z $action ]]; then
+        local file
+        for file in /etc/fail2ban/jail.d/remna-node-setup.local /etc/fail2ban/jail.d/*.local /etc/fail2ban/jail.local; do
+            [[ -r $file ]] || continue
+            blocktype=$(awk '
+                /^\[sshd\]/ { in_sshd = 1; next }
+                /^\[/ { in_sshd = 0 }
+                in_sshd && $1 == "banaction" {
+                    sub(/^[^=]*=[[:space:]]*/, "")
+                    val = $0
+                }
+                END { if (val != "") print val }
+            ' "$file")
+            if [[ -n $blocktype ]]; then action=$blocktype; break; fi
+        done
+    fi
+    if [[ -z $action ]]; then
+        actions=$(fail2ban-client get sshd banaction 2>/dev/null || :)
+        if [[ -n $actions && $actions != *'Invalid command'* && $actions != *'not yet implemented'* ]]; then
+            action=$actions
+        fi
+    fi
+    [[ -n $action ]] && printf '%s\n' "$action"
+}
+
 security_status() {
     if security_ufw_active; then
-        info "UFW включён"
+        local ufw_v=''
+        ufw_v=$(LC_ALL=C ufw status verbose 2>/dev/null || :)
+        if [[ $ufw_v == *'Default: deny (incoming)'* ]]; then
+            info 'UFW включён (входящие закрыты по умолчанию)'
+        elif [[ $ufw_v == *'Default:'* ]]; then
+            warn 'UFW включён, но входящая политика отличается от deny (incoming)'
+        else
+            info 'UFW включён'
+        fi
         security_ufw_boot_verified || :
     else
         warn "UFW выключен или недоступен"
     fi
     if command -v fail2ban-client >/dev/null && fail2ban-client status sshd >/dev/null 2>&1; then
-        info 'Fail2Ban защищает SSH'
+        local action=''
+        action=$(security_fail2ban_action 2>/dev/null || :)
+        info "Fail2Ban защищает SSH${action:+ ($action)}"
     else
         warn "Fail2Ban для SSH недоступен"
     fi

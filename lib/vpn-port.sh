@@ -57,10 +57,79 @@ vpn_port_require_idle() {
     esac
 }
 
+_vpn_port_save_state() {
+    if [[ ${_VPN_PORT_LEGACY_MODE:-no} == yes ]] && declare -F _standalone_save >/dev/null; then
+        _standalone_save
+    else
+        save_config
+    fi
+}
+
+_vpn_port_legacy_init() {
+    local detected='' rules='' rule_ports=''
+    if ! security_ufw_active || ! security_ufw_has_deny_incoming; then
+        fail 'Сначала запустите мастер установки или настройте UFW с политикой deny incoming.'
+        return 1
+    fi
+    if ! declare -F _standalone_load >/dev/null || ! _standalone_load; then
+        return 1
+    fi
+    _VPN_PORT_LEGACY_MODE=yes
+    ENABLE_SECURITY=yes
+    get_admin_ip || :
+    ADMIN_IPS=${ADMIN_IPS:-${ADMIN_IP:-}}
+    if [[ -z $SSH_PORT ]]; then
+        SSH_PORT=$(detect_ssh_port 2>/dev/null || :)
+    fi
+    if [[ -z $NODE_PORT ]] && declare -F _node_external_inspect >/dev/null && _node_external_inspect; then
+        if valid_port "${_NODE_EXT_PORT:-}"; then NODE_PORT=$_NODE_EXT_PORT; fi
+    fi
+    if [[ -z $NODE_DOMAIN ]] && declare -F _selfsteal_external_detect >/dev/null && _selfsteal_external_detect; then
+        NODE_DOMAIN=$_SELFSTEAL_EXT_DOMAIN
+        # shellcheck disable=SC2034 # Consumed by _standalone_save in lib/standalone.sh.
+        SELFSTEAL_SERVER=$_SELFSTEAL_EXT_SERVER
+    fi
+    if [[ -z $PANEL_IPS && -n $NODE_PORT ]] && declare -F security_ufw_panel_ips_for_port >/dev/null; then
+        PANEL_IPS=$(security_ufw_panel_ips_for_port "$NODE_PORT" 2>/dev/null || :)
+    fi
+    if [[ -n $PANEL_IPS ]] && ! normalize_ips "$PANEL_IPS" >/dev/null 2>&1; then
+        PANEL_IPS=
+    fi
+    if [[ -z $PANEL_IPS ]]; then
+        NODE_PORT=
+    fi
+    if [[ -z $VPN_PORTS ]]; then
+        detected=$(security_detect_vpn_ports 2>/dev/null || :)
+        rules=$(LC_ALL=C ufw status 2>/dev/null || :)
+        rule_ports=$(awk -v ssh="${SSH_PORT:-22}" -v node="${NODE_PORT:-}" '
+            $0 !~ /\(v6\)/ && $0 ~ /[[:space:]]ALLOW([[:space:]]+IN)?[[:space:]]+Anywhere([[:space:]]|$)/ {
+                p = $1
+                proto = "tcp"
+                if (p ~ /\//) { split(p, a, "/"); p = a[1]; proto = a[2] }
+                if (p ~ /^[0-9]+$/ && p != 80 && p != ssh && p != node) {
+                    item = p "/" proto
+                    if (!seen[item]++) out = (out ? out " " : "") item
+                }
+            }
+            END { if (out != "") print out }
+        ' <<< "$rules")
+        VPN_PORTS=$(security_normalize_vpn_ports "${detected:-} ${rule_ports:-}" 2>/dev/null || printf '%s\n' "${detected:-}")
+        # shellcheck disable=SC2034 # Consumed by security_prompt_vpn_ports in lib/security.sh.
+        VPN_PORTS_SAVED=yes
+    fi
+}
+
 vpn_port_require_firewall() {
-    require_config || return
+    _VPN_PORT_LEGACY_MODE=no
+    if ! require_config 2>/dev/null; then
+        if [[ -e $CONFIG_DIR/node.json ]]; then
+            require_config
+            return
+        fi
+        _vpn_port_legacy_init || return
+    fi
     if [[ $ENABLE_SECURITY != yes ]] || ! security_ufw_active; then
-        fail 'Сначала настройте UFW через «Порты и защита → Входящие порты и защита SSH».'
+        fail 'Сначала настройте UFW через [2] → [3] «Порты, UFW и защита SSH».'
         return 1
     fi
     security_preflight
@@ -75,7 +144,7 @@ vpn_port_apply_prepare() {
     security_ufw_public_rule "$new/tcp" "$rules" || { fail "Разрешение $new/tcp в UFW не подтверждено."; return 1; }
     security_ufw_set_boot enabled || return
     VPN_PORTS+=" $new/tcp"
-    save_config || return
+    _vpn_port_save_state || return
     jq -n --argjson old "$old" --argjson new "$new" --arg was_open "$was_open" --arg was_blocked "$was_blocked" \
         '{$old,$new,$was_open,$was_blocked}' > "$CONFIG_DIR/vpn-port.json"
 }
@@ -127,9 +196,13 @@ vpn_port_apply_finish() {
     if [[ $close == close ]]; then
         vpn_port_require_idle "$old" && vpn_port_block "$old" || return
     fi
-    save_config || return
+    _vpn_port_save_state || return
     if [[ $refresh == yes ]]; then
         selfsteal_refresh_redirect && selfsteal_verify || return
+    fi
+    if [[ ${_VPN_PORT_LEGACY_MODE:-no} == yes ]] && declare -F _selfsteal_external_detect >/dev/null &&
+       _selfsteal_external_detect && [[ $_SELFSTEAL_EXT_SERVER == nginx && $new != 443 ]]; then
+        warn "Проверьте порт HTTPS-редиректа в внешнем $_SELFSTEAL_EXT_CONFIG (если нужен $new вместо 443)."
     fi
     rm -- "$CONFIG_DIR/vpn-port.json"
     info "VPN-порт: $new/tcp. Старый $old/tcp $([[ $close == close ]] && printf закрыт || printf сохранён)."
@@ -185,7 +258,7 @@ vpn_port_apply_cancel() {
         vpn_port_delete_owned "$new" vpn || return
     fi
     VPN_PORTS=$(vpn_port_list_without "$new") || return
-    save_config && rm -- "$CONFIG_DIR/vpn-port.json"
+    _vpn_port_save_state && rm -- "$CONFIG_DIR/vpn-port.json"
 }
 
 vpn_port_cancel() {
@@ -200,7 +273,7 @@ vpn_port_close_retired() {
     local port=$1
     vpn_port_require_idle "$port" && vpn_port_block "$port" || return
     VPN_PORTS=$(vpn_port_list_without "$port") || return
-    save_config
+    _vpn_port_save_state
 }
 
 vpn_port_close() {

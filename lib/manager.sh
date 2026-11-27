@@ -36,6 +36,8 @@ detect_ssh_port() {
         printf '%s\n' "$saved_port"
     elif command -v sshd >/dev/null; then
         (sshd -T 2>/dev/null || :) | awk '$1 == "port" && !seen++ { print $2 }'
+    elif [[ -x /usr/sbin/sshd ]]; then
+        (/usr/sbin/sshd -T 2>/dev/null || :) | awk '$1 == "port" && !seen++ { print $2 }'
     fi
 }
 
@@ -500,7 +502,7 @@ configure_ipv6() {
 
 repair_security_boot() {
     local consent
-    security_ufw_active || { fail 'Сначала включите UFW в «Входящие порты и защита SSH».'; return 1; }
+    security_ufw_active || { fail 'Сначала включите UFW в [2] → [3] «Порты, UFW и защита SSH».'; return 1; }
     if [[ ${UI_INTERACTIVE:-no} == yes ]]; then
         consent=$(yes_no '  Восстановить автозапуск защитных служб?' n) || return
         [[ $consent == yes ]] || return 0
@@ -525,7 +527,12 @@ configure_traffic_guard() {
     local consent
     require_config || return
     [[ -n ${ADMIN_IP:-}${ADMIN_IPS:-} ]] || { fail 'Укажите доверенный адрес при запуске мастера.'; return 1; }
-    security_ufw_active || { fail 'Сначала включите UFW через пункт «Защита».'; return 1; }
+    security_ufw_active || { fail 'Сначала включите UFW через [2] → [3] «Порты, UFW и защита SSH».'; return 1; }
+    if [[ ! -f $STATE_DIR/traffic-guard/version ]] &&
+       declare -F _traffic_guard_external_present >/dev/null && _traffic_guard_external_present; then
+        fail 'Обнаружен ранее настроенный TrafficGuard или общий /etc/ipset.conf.'
+        return 1
+    fi
     consent=$(yes_no 'Проверить и применить свежую версию и базу TrafficGuard?' n) || return
     [[ $consent == yes ]] || return 0
     ENABLE_TRAFFIC_GUARD=yes
@@ -620,9 +627,16 @@ update_system_packages() {
 
 update_node() {
     local image installed
+    if [[ ! -e $CONFIG_DIR/node.json ]] &&
+       declare -F _node_external_inspect >/dev/null && ! _node_owned_config && _node_external_inspect; then
+        local loc=${_NODE_EXT_DIR:-/opt/remnanode}
+        info "Найдена внешняя нода ($loc)."
+        info "Чтобы не затронуть её конфигурацию, обновляйте контейнер её compose-файлом (cd $loc && docker compose pull && docker compose up -d)."
+        return 0
+    fi
     require_config || return
     if [[ $ENABLE_SECURITY == yes ]] && ! security_ufw_active; then
-        fail 'Включите управляемый UFW через пункт «Порты и защита».'
+        fail 'Включите управляемый UFW через [2] → [3] «Порты, UFW и защита SSH».'
         return 1
     fi
     node_preflight || return
@@ -638,6 +652,15 @@ update_node() {
     run_change node node_apply "$image"
 }
 
+_legacy_host_detected() {
+    { declare -F _node_external_inspect >/dev/null && ! _node_owned_config && _node_external_inspect; } && return 0
+    { declare -F _selfsteal_external_detect >/dev/null && _selfsteal_external_detect; } && return 0
+    { declare -F security_ufw_active >/dev/null && security_ufw_active 2>/dev/null; } && return 0
+    { declare -F _psiphon_existing_install >/dev/null && _psiphon_existing_install 2>/dev/null; } && return 0
+    { declare -F _traffic_guard_external_present >/dev/null && _traffic_guard_external_present 2>/dev/null; } && return 0
+    return 1
+}
+
 backup_scope() {
     local scope='config'
     if [[ -n $NODE_PORT ]]; then scope+=' node'; fi
@@ -651,6 +674,24 @@ backup_scope() {
 create_backup() {
     local id scope
     if ! load_config && ! load_host_settings; then
+        if _legacy_host_detected; then
+            local dir
+            local -a legacy_paths=(
+                /opt/remnanode /etc/nginx /etc/caddy /etc/letsencrypt/renewal
+                /etc/ufw /etc/default/ufw /etc/fail2ban /etc/ipset.conf /etc/sysctl.d
+                /etc/default/vps-psiphon
+            )
+            if [[ -n ${LEGACY_SNAPSHOT_PATHS:-} ]]; then
+                read -r -a legacy_paths <<< "$LEGACY_SNAPSHOT_PATHS"
+            fi
+            dir=$(mktemp -d "$BACKUP_DIR/$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX") || return
+            chmod 0700 "$dir" || return
+            mkdir -- "$dir/files" || return
+            path_snapshot "$dir" "${legacy_paths[@]}" || return
+            printf 'external\n' > "$dir/scopes" || return
+            info "Архивная копия конфигов существующего сервера сохранена в $dir."
+            return 0
+        fi
         fail 'Сначала настройте ноду или один из компонентов.'
         return 1
     fi
@@ -666,6 +707,10 @@ do_restore() {
         return 1
     fi
     scope=$(< "$BACKUP_DIR/$id/scopes")
+    if [[ $scope == external ]]; then
+        fail "Это архивная копия внешней установки ($BACKUP_DIR/$id/files); автоматический откат для неё отключён во избежание конфликта."
+        return 1
+    fi
     run_change "$scope" restore_snapshot "$id" "$scope"
 }
 
@@ -675,6 +720,24 @@ status_all() {
     if [[ -n $id ]]; then ui_network_confirmation; fi
     if ! load_config && ! load_host_settings; then
         node_status || :
+        if _legacy_host_detected; then
+            if { declare -F _selfsteal_caddy_owned_config >/dev/null && _selfsteal_caddy_owned_config; } ||
+               { declare -F _selfsteal_nginx_owned_config >/dev/null && _selfsteal_nginx_owned_config; } ||
+               { declare -F _selfsteal_external_detect >/dev/null && _selfsteal_external_detect; }; then
+                selfsteal_status || :
+            fi
+            if declare -F security_status >/dev/null; then security_status; fi
+            if { declare -F _node_external_inspect >/dev/null && _node_external_inspect; } ||
+               [[ -n $(security_detect_vpn_ports 2>/dev/null || :) ]]; then
+                security_vpn_status || :
+            fi
+            bbr_status
+            ipv6_status
+            traffic_guard_status || :
+            psiphon_status || :
+            if declare -F auto_update_status >/dev/null; then auto_update_status || :; fi
+            return 0
+        fi
         if psiphon_is_managed; then
             psiphon_status || :
         else
@@ -683,18 +746,96 @@ status_all() {
         return 0
     fi
     node_status || :
-    if [[ $ENABLE_SELFSTEAL == yes ]]; then selfsteal_status || :; fi
-    if [[ $ENABLE_SECURITY == yes ]]; then security_status; fi
-    if [[ -n $NODE_PORT || -n $VPN_PORTS ]]; then security_vpn_status || :; fi
+    if [[ $ENABLE_SELFSTEAL == yes ]] ||
+       { declare -F _selfsteal_external_detect >/dev/null && _selfsteal_external_detect; }; then
+        selfsteal_status || :
+    fi
+    if [[ $ENABLE_SECURITY == yes ]] ||
+       { declare -F security_ufw_active >/dev/null && security_ufw_active 2>/dev/null; }; then
+        security_status
+    fi
+    if [[ -n $NODE_PORT || -n $VPN_PORTS ]] ||
+       { declare -F _node_external_inspect >/dev/null && ! _node_owned_config && _node_external_inspect; }; then
+        security_vpn_status || :
+    fi
     bbr_status
     ipv6_status
-    traffic_guard_status
+    traffic_guard_status || :
     psiphon_status || :
+    if declare -F auto_update_status >/dev/null; then auto_update_status || :; fi
+}
+
+_doctor_host_footer() {
+    local result=0
+    security_os_updates_status
+    bbr_status
+    ipv6_status
+    if command -v timedatectl >/dev/null 2>&1; then
+        if [[ $(timedatectl show -p NTPSynchronized --value 2>/dev/null || :) == yes ]]; then
+            info 'Время синхронизировано по NTP.'
+        else
+            warn 'Синхронизация времени NTP не подтверждена (критично для REALITY). Проверьте systemd-timesyncd (time.cloudflare.com) и UDP/123.'
+        fi
+    fi
+    df -h -- "$STATE_DIR" "$BACKUP_DIR" || result=1
+    return "$result"
 }
 
 doctor() {
     local result=0 listeners=''
     if ! load_config && ! load_host_settings; then
+        if _legacy_host_detected; then
+            if declare -F _node_external_inspect >/dev/null && _node_external_inspect; then
+                node_status required || result=1
+                if valid_port "${_NODE_EXT_PORT:-}" && security_ufw_active 2>/dev/null; then
+                    local ext_panel=''
+                    ext_panel=$(security_ufw_panel_ips_for_port "$_NODE_EXT_PORT" 2>/dev/null || :)
+                    if [[ -n $ext_panel ]]; then
+                        info "UFW: порт ноды $_NODE_EXT_PORT/tcp разрешён для панели ($ext_panel)."
+                    elif LC_ALL=C ufw status 2>/dev/null | grep -Eq "^$_NODE_EXT_PORT(/tcp)?[[:space:]]+ALLOW([[:space:]]+IN)?[[:space:]]+Anywhere"; then
+                        warn "UFW: порт ноды $_NODE_EXT_PORT/tcp открыт для Anywhere; рекомендуется ограничить только IP панели."
+                        result=1
+                    else
+                        warn "UFW: не найдено явное правило разрешения $_NODE_EXT_PORT/tcp для панели."
+                        result=1
+                    fi
+                fi
+            fi
+            if { declare -F _selfsteal_caddy_owned_config >/dev/null && _selfsteal_caddy_owned_config; } ||
+               { declare -F _selfsteal_nginx_owned_config >/dev/null && _selfsteal_nginx_owned_config; } ||
+               { declare -F _selfsteal_external_detect >/dev/null && _selfsteal_external_detect; }; then
+                selfsteal_status || result=1
+                if [[ -n ${_SELFSTEAL_EXT_DOMAIN:-} ]]; then
+                    NODE_DOMAIN=$_SELFSTEAL_EXT_DOMAIN _selfsteal_validate_domain report || result=1
+                fi
+            fi
+            if declare -F security_vpn_status >/dev/null; then
+                security_vpn_status || result=1
+            fi
+            if security_ufw_active 2>/dev/null; then
+                if ! security_ufw_has_deny_incoming 2>/dev/null; then
+                    warn 'UFW: политика по умолчанию отличается от deny (incoming).'
+                    result=1
+                fi
+                if ! security_ufw_boot_verified; then result=1; fi
+            else
+                warn 'UFW неактивен.'
+                result=1
+            fi
+            if ! fail2ban-client status sshd >/dev/null 2>&1; then
+                warn 'Fail2Ban для SSH недоступен.'
+                result=1
+            fi
+            if { declare -F _traffic_guard_external_present >/dev/null && _traffic_guard_external_present; } ||
+               [[ -s $STATE_DIR/traffic-guard/version ]]; then
+                traffic_guard_status || result=1
+            fi
+            if psiphon_is_managed || { declare -F _psiphon_existing_install >/dev/null && _psiphon_existing_install; }; then
+                psiphon_status || result=1
+            fi
+            _doctor_host_footer || result=1
+            return "$result"
+        fi
         if psiphon_is_managed; then psiphon_status; return; fi
         fail 'Сначала настройте ноду или один из компонентов.'
         return 1
@@ -703,6 +844,9 @@ doctor() {
     if [[ $ENABLE_SELFSTEAL == yes ]]; then
         selfsteal_status || result=1
         _selfsteal_validate_domain report || result=1
+    elif declare -F _selfsteal_external_detect >/dev/null && _selfsteal_external_detect; then
+        selfsteal_status || result=1
+        NODE_DOMAIN=$_SELFSTEAL_EXT_DOMAIN _selfsteal_validate_domain report || result=1
     fi
     if [[ -n $NODE_PORT || -n $VPN_PORTS ]]; then
         if [[ $ENABLE_SECURITY == yes ]]; then
@@ -719,30 +863,24 @@ doctor() {
         if ! fail2ban-client status sshd >/dev/null 2>&1; then warn 'Fail2Ban для SSH недоступен.'; result=1; fi
     fi
     if [[ $ENABLE_TRAFFIC_GUARD == yes ]]; then traffic_guard_status required || result=1; fi
-    if psiphon_is_managed; then psiphon_status || result=1; fi
-    security_os_updates_status
-    bbr_status
-    ipv6_status
-    if command -v timedatectl >/dev/null 2>&1; then
-        if [[ $(timedatectl show -p NTPSynchronized --value 2>/dev/null || :) == yes ]]; then
-            info 'Время синхронизировано по NTP.'
-        else
-            warn 'Синхронизация времени NTP не подтверждена (критично для REALITY). Проверьте systemd-timesyncd (time.cloudflare.com) и UDP/123.'
-        fi
+    if psiphon_is_managed || { declare -F _psiphon_existing_install >/dev/null && _psiphon_existing_install; }; then
+        psiphon_status || result=1
     fi
-    df -h -- "$STATE_DIR" "$BACKUP_DIR" || result=1
+    _doctor_host_footer || result=1
     return "$result"
 }
 
 audit_live() {
-    local result=0 port=1080 marker ban_action gemini_code gemini_ip yt_code cert_dir
+    local result=0 port=1080 ban_action='' gemini_code gemini_ip yt_code cert_dir
     ui_section 'Базовая проверка ноды и сервисов'
     doctor || result=1
     printf '\n'
     ui_section 'Живой аудит сети, маршрутов и сертификата'
 
     if command -v fail2ban-client >/dev/null 2>&1 && fail2ban-client status sshd >/dev/null 2>&1; then
-        ban_action=$(fail2ban-client get sshd banaction 2>/dev/null || :)
+        if declare -F security_fail2ban_action >/dev/null; then
+            ban_action=$(security_fail2ban_action 2>/dev/null || :)
+        fi
         info "Fail2Ban sshd · активен (${ban_action:-настроен})."
     fi
 
@@ -752,9 +890,11 @@ audit_live() {
         warn 'IPv6 · не отключён (при желании отключите в [2] → [6]).'
     fi
 
-    if [[ ${ENABLE_SELFSTEAL:-no} == yes && ${SELFSTEAL_SERVER:-} == nginx ]] && command -v certbot >/dev/null 2>&1; then
+    if command -v certbot >/dev/null 2>&1; then
         cert_dir="$STATE_DIR/nginx-certbot"
-        if [[ -d $cert_dir/config/renewal ]]; then
+        if [[ ${ENABLE_SELFSTEAL:-no} == yes && ${SELFSTEAL_SERVER:-} == nginx ]] &&
+           [[ -d $cert_dir/config/renewal ]]; then
+            info 'Проверяю тестовое продление сертификата (Certbot dry-run)…'
             if certbot --config-dir "$cert_dir/config" --work-dir "$cert_dir/work" --logs-dir "$cert_dir/logs" \
                 renew --dry-run --no-random-sleep-on-renew >/dev/null 2>&1; then
                 info 'Certbot dry-run · автопродление сертификата проходит без конфликта с Nginx.'
@@ -762,15 +902,24 @@ audit_live() {
                 warn 'Certbot dry-run · ошибка тестового продления (проверьте 80/tcp и DNS).'
                 result=1
             fi
+        elif [[ -d /etc/letsencrypt/renewal ]] &&
+             find /etc/letsencrypt/renewal -maxdepth 1 -name '*.conf' -print -quit 2>/dev/null | grep -q .; then
+            info 'Проверяю тестовое продление системного сертификата (Certbot dry-run)…'
+            if certbot renew --dry-run --no-random-sleep-on-renew >/dev/null 2>&1; then
+                info 'Certbot dry-run · автопродление сертификата (/etc/letsencrypt) проходит без ошибок.'
+            else
+                warn 'Certbot dry-run · ошибка тестового продления (/etc/letsencrypt, проверьте 80/tcp и DNS).'
+                result=1
+            fi
         fi
     fi
 
-    if psiphon_is_managed; then
-        marker=$(_psiphon_marker 2>/dev/null || :)
-        if [[ -s $marker ]]; then port=$(jq -r '.port // 1080' "$marker" 2>/dev/null || printf '1080'); fi
+    if declare -F psiphon_active_port >/dev/null; then
+        port=$(psiphon_active_port 2>/dev/null || printf '1080')
     fi
     if ss -H -ltn "sport = :$port" 2>/dev/null | grep -q "127.0.0.1:$port"; then
         local gemini_check=${PSIPHON_GEMINI_CHECK_BIN:-/usr/local/sbin/vps-psiphon-gemini-check} gem_out='' gem_rc=0
+        info "Проверяю выход Gemini через Psiphon (127.0.0.1:$port)…"
         gemini_ip=$(curl --socks5-hostname "127.0.0.1:$port" -sS --connect-timeout 6 --max-time 10 \
             'https://api.ipify.org' 2>/dev/null || :)
         if [[ -x $gemini_check ]]; then
@@ -807,7 +956,7 @@ audit_live() {
             fi
         fi
     else
-        info 'Psiphon · не запущен на 127.0.0.1:1080 (пропуск теста Gemini).'
+        info "Psiphon · не запущен на 127.0.0.1:$port (пропуск теста Gemini)."
     fi
 
     if command -v curl >/dev/null 2>&1; then
@@ -824,9 +973,13 @@ audit_live() {
 }
 
 check_dns() {
-    local domain=$1
+    local domain=${1-}
     if [[ -z $domain ]]; then
-        if load_config || load_host_settings; then domain=$NODE_DOMAIN; fi
+        if load_config || load_host_settings; then
+            domain=$NODE_DOMAIN
+        elif declare -F _selfsteal_external_detect >/dev/null && _selfsteal_external_detect; then
+            domain=$_SELFSTEAL_EXT_DOMAIN
+        fi
         if [[ $UI_INTERACTIVE == yes ]]; then
             domain=$(wizard_input 'Поддомен ноды' "$domain" check_node_domain) || return
         fi
@@ -915,7 +1068,7 @@ dispatch() (
                 tool) [[ $# -le 3 ]] || return 2; release_update "${3-}" ;;
                 node) [[ $# == 2 ]] || return 2; update_node force ;;
                 all) [[ $# == 2 ]] || return 2; update_all manual ;;
-                psiphon) [[ $# == 2 ]] || return 2; psiphon_update ;;
+                psiphon) [[ $# == 2 ]] || return 2; psiphon_update_action ;;
                 packages) [[ $# -le 3 ]] || return 2; update_system_packages "${3-}" ;;
                 traffic-guard)
                     [[ $# == 2 ]] || return 2

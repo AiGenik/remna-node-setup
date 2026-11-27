@@ -247,11 +247,53 @@ traffic_guard_apply() (
     printf '%s\n' "$commit" > "$installed/list-commit"
 )
 
+_traffic_guard_external_present() {
+    local set_names=''
+    if command -v ipset >/dev/null 2>&1; then
+        set_names=$(ipset list -n 2>/dev/null || :)
+    fi
+    [[ -x /usr/local/bin/traffic-guard || -e /etc/ipset.conf ||
+       -e /etc/systemd/system/antiscan-ipset-restore.service ||
+       -e /etc/systemd/system/antiscan-move-rules.service ||
+       $set_names == *SCANNERS-BLOCK* ]] && return 0
+    if command -v iptables >/dev/null 2>&1 && iptables -w -S SCANNERS-BLOCK >/dev/null 2>&1; then
+        return 0
+    fi
+    traffic_guard_firewall_active 2>/dev/null
+}
+
+_traffic_guard_external_version() {
+    local bin=${TRAFFIC_GUARD_BIN:-/usr/local/bin/traffic-guard} raw='' ver=''
+    if [[ -x $bin ]]; then
+        raw=$(timeout 2s "$bin" --version 2>/dev/null || timeout 2s "$bin" version 2>/dev/null || :)
+        if [[ $raw =~ v?([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+            ver=${BASH_REMATCH[1]}
+            printf '%s\n' "$ver"
+            return 0
+        fi
+    fi
+    if _traffic_guard_external_present; then
+        printf 'внешний\n'
+        return 0
+    fi
+    return 1
+}
+
 traffic_guard_status() {
     local version_file="$STATE_DIR/traffic-guard/version" commit_file="$STATE_DIR/traffic-guard/list-commit"
     local commit suffix=''
     if [[ ! -f $version_file ]]; then
+        if traffic_guard_firewall_active 2>/dev/null; then
+            local ext_ver=''
+            ext_ver=$(_traffic_guard_external_version 2>/dev/null || :)
+            info "TrafficGuard (${ext_ver:-внешний}) включён."
+            return 0
+        fi
         if [[ ${1-} == required ]]; then fail 'TrafficGuard включён в настройках, но не установлен.'; return 1; fi
+        if _traffic_guard_external_present; then
+            warn 'TrafficGuard (внешний) найден, но правила фильтра неактивны.'
+            return 1
+        fi
         info "TrafficGuard выключен."
     elif traffic_guard_firewall_active; then
         if [[ -r $commit_file ]]; then
@@ -261,7 +303,7 @@ traffic_guard_status() {
         info "TrafficGuard $(< "$version_file") включён$suffix."
         if ! systemctl is-enabled --quiet antiscan-ipset-restore.service ||
             ! systemctl is-enabled --quiet antiscan-move-rules.service; then
-            warn 'Автозапуск TrafficGuard не подтверждён. Откройте «Восстановить автозапуск защиты».'
+            warn 'Автозапуск TrafficGuard не подтверждён. Откройте [2] → [10] «Восстановить автозапуск защиты».'
             if [[ ${1-} == required ]]; then return 1; fi
         fi
     else

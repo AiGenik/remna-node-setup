@@ -114,8 +114,14 @@ apply_combined_updates() (
         else
             update_node if-needed || result=1
         fi
+    elif [[ $mode == manual ]] && declare -F _node_external_inspect >/dev/null && ! _node_owned_config && _node_external_inspect; then
+        info "Внешняя нода (${_NODE_EXT_DIR:-/opt/remnanode}) сохранена без перезаписи."
     fi
-    if psiphon_is_managed; then psiphon_update || result=1; fi
+    if psiphon_is_managed; then
+        psiphon_update || result=1
+    elif [[ $mode == manual ]] && declare -F _psiphon_existing_install >/dev/null && _psiphon_existing_install; then
+        info 'Внешний vps-psiphon сохранён без перезаписи.'
+    fi
 
     if [[ $configured == yes && $ENABLE_TRAFFIC_GUARD == yes && -s $STATE_DIR/traffic-guard/version ]]; then
         get_admin_ip || return
@@ -132,6 +138,9 @@ apply_combined_updates() (
         else
             info 'TrafficGuard и список сканеров актуальны.'
         fi
+    elif [[ $mode == manual ]] && [[ ! -s $STATE_DIR/traffic-guard/version ]] &&
+         declare -F _traffic_guard_external_present >/dev/null && _traffic_guard_external_present; then
+        info 'Внешний TrafficGuard (/etc/ipset.conf) сохранён без перезаписи.'
     fi
 
     if [[ -n $pending_packages || -n $pending_guard ]]; then
@@ -170,18 +179,33 @@ _updates_github_tag() {
     jq -er '.tag_name | strings' <<< "$metadata" 2>/dev/null
 }
 
+_updates_pad_col() {
+    local width=$1 text=$2 pad
+    pad=$(( width - ${#text} ))
+    (( pad > 0 )) || pad=0
+    printf '%s%*s' "$text" "$pad" ''
+}
+
 _updates_print_row() {
-    local component=$1 current=${2:--} latest=${3:--} status
-    if [[ $current == '-' || $current == 'не установлен' ]]; then
-        status='—'
-    elif [[ $latest == '-' || $latest == 'недоступно' ]]; then
-        status='онлайн недоступно'
-    elif [[ ${current#v} == "${latest#v}" ]]; then
-        status='✓ актуален'
-    else
-        status='↑ есть обновление'
+    local component=$1 current=${2:--} latest=${3:--} status=${4-}
+    if [[ -z $status ]]; then
+        if [[ $current == '-' || $current == 'не установлен' ]]; then
+            status='—'
+        elif [[ $current == 'внешний' || $current == 'latest' || $current == 'установлен' ]]; then
+            status='внешний'
+        elif [[ $latest == '-' || $latest == 'недоступно' ]]; then
+            status='онлайн недоступно'
+        elif [[ ${current#v} == "${latest#v}" ]]; then
+            status='✓ актуален'
+        else
+            status='↑ есть обновление'
+        fi
     fi
-    printf '  %-24s %-16s %-16s %s\n' "$component" "$current" "$latest" "$status"
+    printf '  %s %s %s %s\n' \
+        "$(_updates_pad_col 24 "$component")" \
+        "$(_updates_pad_col 18 "$current")" \
+        "$(_updates_pad_col 18 "$latest")" \
+        "$status"
 }
 
 show_versions() {
@@ -189,7 +213,7 @@ show_versions() {
     local node_cur='не установлен' node_lat='недоступно' node_img
     local tg_cur='не установлен' tg_lat='недоступно'
     local psi_cur='не установлен' psi_lat='недоступно' psi_marker
-    local pkg pkg_cur pkg_lat
+    local pkg pkg_cur pkg_lat pkg_status
 
     if [[ -n ${CONFIG_DIR:-} && -s $CONFIG_DIR/release-repository ]]; then
         repo=$(< "$CONFIG_DIR/release-repository")
@@ -206,6 +230,8 @@ show_versions() {
             node_cur=${node_cur#v}
         fi
         [[ -n $node_cur ]] || node_cur='установлен'
+    elif declare -F _node_external_inspect >/dev/null && _node_external_inspect; then
+        node_cur=${_NODE_EXT_VERSION:-внешний}
     fi
     if declare -F _node_latest_tag >/dev/null; then
         node_lat=$(_node_latest_tag 2>/dev/null || printf 'недоступно')
@@ -214,22 +240,32 @@ show_versions() {
 
     if [[ -s $STATE_DIR/traffic-guard/version ]]; then
         tg_cur=$(< "$STATE_DIR/traffic-guard/version")
+    elif declare -F _traffic_guard_external_version >/dev/null &&
+         tg_cur=$(_traffic_guard_external_version 2>/dev/null); then
+        :
+    else
+        tg_cur='не установлен'
     fi
     tg_lat=$(_updates_github_tag 'dotX12/traffic-guard' 2>/dev/null || printf 'недоступно')
     tg_lat=${tg_lat#v}
 
     if psi_marker=$(_psiphon_marker 2>/dev/null) && [[ -s $psi_marker ]]; then
         psi_cur=$(jq -r '.version // "установлен"' "$psi_marker" 2>/dev/null || printf 'установлен')
-    elif systemctl is-active --quiet vps-psiphon.service 2>/dev/null; then
-        psi_cur='сторонний'
+    elif declare -F _psiphon_existing_install >/dev/null && _psiphon_existing_install; then
+        psi_cur=$(_psiphon_env_version 2>/dev/null || printf 'внешний')
     fi
     if declare -F psiphon_latest_version >/dev/null; then
         psi_lat=$(psiphon_latest_version 2>/dev/null || printf 'недоступно')
     fi
 
     ui_section 'Версии компонентов (установлено / онлайн)'
-    printf '  %-24s %-16s %-16s %s\n' 'Компонент' 'Установлено' 'Актуально' 'Статус'
-    printf '  %-24s %-16s %-16s %s\n' '────────────────────────' '────────────────' '────────────────' '───────────────'
+    printf '  %s %s %s %s\n' \
+        "$(_updates_pad_col 24 'Компонент')" \
+        "$(_updates_pad_col 18 'Установлено')" \
+        "$(_updates_pad_col 18 'Актуально')" \
+        'Статус'
+    printf '  %s %s %s %s\n' \
+        '────────────────────────' '──────────────────' '──────────────────' '─────────────────'
     _updates_print_row 'remna-node-setup' "${tool_cur#v}" "${tool_lat#v}"
     _updates_print_row 'Remnawave Node / Xray' "$node_cur" "$node_lat"
     _updates_print_row 'TrafficGuard' "$tg_cur" "$tg_lat"
@@ -237,12 +273,17 @@ show_versions() {
     for pkg in nginx certbot ufw fail2ban docker-ce; do
         pkg_cur=$(apt_installed_version "$pkg" 2>/dev/null || :)
         [[ -n $pkg_cur ]] || continue
-        pkg_lat=$(LC_ALL=C apt-cache policy "$pkg" 2>/dev/null | awk '$1 == "Candidate:" {print $2; exit}') || pkg_lat='-'
+        pkg_lat=$(LC_ALL=C apt-cache policy "$pkg" 2>/dev/null | awk '$1 == "Candidate:" {print $2; exit}') || pkg_lat=''
         pkg_cur=${pkg_cur%%+*}
         pkg_cur=${pkg_cur#*:}
         pkg_lat=${pkg_lat%%+*}
         pkg_lat=${pkg_lat#*:}
-        _updates_print_row "$pkg" "${pkg_cur:0:15}" "${pkg_lat:0:15}"
+        pkg_status=''
+        if [[ -z $pkg_lat || $pkg_lat == '(none)' ]]; then
+            pkg_lat='-'
+            pkg_status='нет кеша apt'
+        fi
+        _updates_print_row "$pkg" "${pkg_cur:0:18}" "${pkg_lat:0:18}" "$pkg_status"
     done
     if command -v timedatectl >/dev/null 2>&1; then
         printf '\n'
