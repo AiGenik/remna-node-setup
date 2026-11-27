@@ -494,7 +494,7 @@ with ThreadPoolExecutor(max_workers=8) as pool:
 if extra:
     print(json.dumps({"tls": tls_result, "udp": udp_res, "busy": busy_res}), flush=True)
 else:
-    print(json.dumps(tls_result), flush=True)
+    print(json.dumps({"tls": tls_result}), flush=True)
 
 ok = (
     all(passed)

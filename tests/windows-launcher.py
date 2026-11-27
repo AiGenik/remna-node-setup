@@ -315,8 +315,12 @@ def test_panel_relay(shell_exe, ssh_stub, stub_py, fixture):
 
         def serve_tls():
             conn, _ = listener.accept()
-            with conn, context.wrap_socket(conn, server_side=True):
-                pass
+            with conn:
+                try:
+                    with context.wrap_socket(conn, server_side=True) as tls_conn:
+                        tls_conn.recv(1)
+                except OSError:
+                    pass
 
         t = threading.Thread(target=serve_tls, daemon=True)
         t.start()
