@@ -382,11 +382,16 @@ def test_real_win32_openssh_and_helpers(shell_exe, fixture):
         encoding="utf-8",
     )
 
+    probe = subprocess.run(
+        [str(win_ssh), "-G", "-F", "NUL", "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ControlPersist=no", "127.0.0.1"],
+        stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10,
+    )
+    cm_expected = "$true" if (probe.returncode == 0 and "unsupported option" not in probe.stderr.lower()) else "$false"
+
     script = f'''
 . '{lib_ps1}'
 $opts = Get-SupportedSshSecurityOptions '{win_ssh}'
-$probeOut = & '{win_ssh}' -G -F NUL -o ControlMaster=no -o ControlPath=none -o ControlPersist=no 127.0.0.1 2>&1 | Out-String
-$cmSupported = ($LASTEXITCODE -eq 0 -and ($probeOut -notmatch '(?i)unsupported option'))
+$cmSupported = {cm_expected}
 if ($cmSupported -and (($opts -join ' ') -notmatch 'ControlMaster=no')) {{ throw 'ControlMaster=no missing when supported by OpenSSH' }}
 if ((-not $cmSupported) -and (($opts -join ' ') -match 'ControlMaster')) {{ throw 'ControlMaster should be omitted when unsupported by OpenSSH' }}
 if (($opts -join ' ') -notmatch 'ForwardAgent=no') {{ throw 'ForwardAgent=no missing' }}
