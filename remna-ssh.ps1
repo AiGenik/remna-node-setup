@@ -155,7 +155,7 @@ function Test-SshOptionGroup([string]$SshExe, [string]$EmptyConfig, [string[]]$O
     }
     [void]$probeArgs.Add('127.0.0.1')
     $res = Invoke-CaptureProcess $SshExe $probeArgs.ToArray() 5000
-    return ($res.ExitCode -eq 0)
+    return ($res.ExitCode -eq 0 -and ($res.Stderr -notmatch '(?i)unsupported option'))
 }
 
 function Get-SupportedSshSecurityOptions([string]$SshExe) {
