@@ -80,7 +80,17 @@ function Invoke-RemnaClientInstall {
             throw 'В релизе отсутствует корректная сумма SHA-256 для remna-ssh.ps1.'
         }
         $expectedHash = $Matches[1].ToLowerInvariant()
-        $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $stagedScript).Hash.ToLowerInvariant()
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $stream = [System.IO.File]::OpenRead($stagedScript)
+            try {
+                $actualHash = ([System.BitConverter]::ToString($sha256.ComputeHash($stream)) -replace '-', '').ToLowerInvariant()
+            } finally {
+                $stream.Dispose()
+            }
+        } finally {
+            $sha256.Dispose()
+        }
         if ($actualHash -cne $expectedHash) {
             throw 'Контрольная сумма SHA-256 для remna-ssh.ps1 не совпала.'
         }

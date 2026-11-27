@@ -162,8 +162,15 @@ def find_csc():
 
 
 def run_ps(shell_exe, ps_args, *, env=None, input_text=None, timeout=20):
+    ps_env = dict(os.environ if env is None else env)
+    if Path(shell_exe).name.lower() == "powershell.exe" and "PSModulePath" in ps_env:
+        # Avoid inheriting PowerShell 7 module paths when launched from a pwsh CI shell.
+        ps_env["PSModulePath"] = ";".join(
+            entry for entry in ps_env["PSModulePath"].split(";")
+            if entry and "\\powershell\\7" not in entry.lower() and "/powershell/7" not in entry.lower()
+        )
     cmd = [shell_exe, "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", *ps_args]
-    return subprocess.run(cmd, env=env, input=input_text, capture_output=True, timeout=timeout)
+    return subprocess.run(cmd, env=ps_env, input=input_text, capture_output=True, timeout=timeout)
 
 
 def check_bom_and_ast(shell_exe):
