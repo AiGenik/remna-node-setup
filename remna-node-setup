@@ -47,12 +47,43 @@ source "$PROJECT_DIR/lib/port-preflight.sh"
 # Only the SSH launcher and its controlled release handoff assign this ticket.
 SSH_MENU_TICKET=
 SSH_PANEL_PROBE_HOST=
+REMNA_INTRO_MODE=default
+remna_no_intro_flag=no
+remna_args=()
+for arg do
+    case "$arg" in
+        --no-intro)
+            remna_no_intro_flag=yes
+            REMNA_INTRO_MODE=off
+            export REMNA_NO_INTRO=1
+            UI_NO_ANIMATION=yes
+            ;;
+        --demo-intro)
+            if [[ $remna_no_intro_flag != yes ]]; then
+                REMNA_INTRO_MODE=demo
+            fi
+            ;;
+        *)
+            remna_args+=("$arg")
+            ;;
+    esac
+done
+if (( ${#remna_args[@]} > 0 )); then
+    set -- "${remna_args[@]}"
+else
+    set --
+fi
+if [[ $REMNA_INTRO_MODE == demo && $remna_no_intro_flag != yes ]]; then
+    unset REMNA_NO_INTRO
+fi
 
 usage() {
     cat <<'HELP'
 Remna Node Setup
 
   remna-node-setup                     Меню
+  remna-node-setup --no-intro          Запуск без вступительной анимации (или REMNA_NO_INTRO=1)
+  remna-node-setup --demo-intro        Полная демо-анимация при запуске (~15 с)
   remna-node-setup install            Настроить ноду, защиту и выбранные компоненты
   remna-node-setup install node-only  Установить только Docker и ноду
   remna-node-setup selfsteal [caddy|nginx] Настроить веб-сервер для self-steal
@@ -99,12 +130,16 @@ self_test() {
         load_host_settings standalone_selfsteal standalone_security standalone_bbr standalone_ipv6 standalone_traffic_guard \
         configure_ipv6 auto_update_enabled psiphon_configure psiphon_is_managed psiphon_select_settings \
         psiphon_apply_settings psiphon_profile psiphon_profile_merge psiphon_outbound \
-        vpn_port_wizard update_all show_versions audit_live standalone_port_preflight; do
+        vpn_port_wizard update_all show_versions audit_live standalone_port_preflight ui_splash_intro; do
         declare -F "$name" >/dev/null || { fail "Не загружен модуль $name."; return 1; }
     done
     [[ -r $PROJECT_DIR/lib/secret-input.py ]] || { fail 'Модуль ввода ключа отсутствует.'; return 1; }
     [[ -r $PROJECT_DIR/lib/selfsteal-dns.py ]] || { fail 'Модуль проверки DNS отсутствует.'; return 1; }
     [[ -r $PROJECT_DIR/lib/port-probe.py ]] || { fail 'Модуль сетевой проверки отсутствует.'; return 1; }
+    [[ -r $PROJECT_DIR/lib/splash.py ]] || { fail 'Модуль заставки отсутствует.'; return 1; }
+    if command -v python3 >/dev/null 2>&1; then
+        python3 "$PROJECT_DIR/lib/splash.py" --self-check || { fail 'Модуль заставки неисправен.'; return 1; }
+    fi
     [[ -s $PROJECT_DIR/templates/index.html ]] || { fail 'Шаблон страницы self-steal отсутствует.'; return 1; }
     [[ -r $PROJECT_DIR/templates/robots.txt && -r $PROJECT_DIR/templates/favicon.svg ]] ||
         { fail 'Вспомогательные файлы страницы self-steal отсутствуют.'; return 1; }
@@ -117,6 +152,14 @@ case "${1-}" in
     --self-test) self_test; exit ;;
     --supports-ssh-menu|--supports-panel-probe) exit 0 ;;
 esac
+
+if [[ $REMNA_INTRO_MODE == demo && $# == 0 ]]; then
+    if ! ensure_host >/dev/null 2>&1; then
+        ui_init || UI_VERSION=
+        ui_splash_intro demo
+        exit $?
+    fi
+fi
 
 ensure_host
 install -d -m 0700 -- "$CONFIG_DIR" "$STATE_DIR" "$BACKUP_DIR"
@@ -139,6 +182,9 @@ case "${1-}" in
         if [[ -n $previous && $previous != - ]]; then
             dispatch __ssh-confirm "$previous"
             notice='Сеть подтверждена по SSH.'
+            UI_INTRO_SHOWN=yes
+        elif [[ $REMNA_INTRO_MODE != off ]]; then
+            ui_splash_intro "$REMNA_INTRO_MODE" || exit $?
         fi
         show_menu "$notice"
         exit
@@ -172,7 +218,13 @@ case "${1-}" in
         ;;
 esac
 if (( $# == 0 )); then
+    if [[ $REMNA_INTRO_MODE != off ]]; then
+        ui_splash_intro "$REMNA_INTRO_MODE" || exit $?
+    fi
     show_menu
     exit
+fi
+if [[ $REMNA_INTRO_MODE == demo ]]; then
+    ui_splash_intro demo || exit $?
 fi
 dispatch "$@"

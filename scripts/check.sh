@@ -16,6 +16,7 @@ python3 tests/dns-settings.py
 python3 tests/port-probe.py
 python3 tests/panel-launcher.py
 python3 tests/ui-smoke.py
+python3 tests/splash.py
 ./tests/release-smoke.sh
 
 stage=$(mktemp -d)

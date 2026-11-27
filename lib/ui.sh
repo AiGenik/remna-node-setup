@@ -102,6 +102,90 @@ _ui_eye_intro() {
     done
 }
 
+_ui_splash_env_blocked() {
+    local val
+    if [[ ! -t 1 || -z ${TERM:-} || $TERM == dumb || -n ${NO_COLOR+x} ]]; then
+        return 0
+    fi
+    case "${REMNA_NO_INTRO:-}" in
+        1|[yY][eE][sS]|[tT][rR][uU][eE]|[oO][nN]) return 0 ;;
+    esac
+    if [[ ${UI_NO_ANIMATION:-no} == yes ]]; then
+        return 0
+    fi
+    for val in "${CI:-}" "${GITHUB_ACTIONS:-}" "${GITLAB_CI:-}" "${JENKINS_URL:-}" \
+               "${BUILDKITE:-}" "${CIRCLECI:-}" "${TRAVIS:-}" "${TF_BUILD:-}"; do
+        case "$val" in
+            ''|0|[fF][aA][lL][sS][eE]|[nN][oO]) ;;
+            *) return 0 ;;
+        esac
+    done
+    return 1
+}
+
+_ui_splash_fallback() {
+    local mode=${1:-default}
+    if [[ ${UI_CLEAR:-no} == yes ]]; then
+        ui_layout
+        if (( UI_COLUMNS >= 50 && UI_RULE_WIDTH >= 42 )) && [[ $UI_COMPACT != yes ]]; then
+            printf '\033[H\033[2J'
+            _ui_render_header_box "$UI_EYE_FRAME" '' ''
+            if [[ $mode == demo ]]; then
+                sleep 0.35
+            fi
+        elif [[ $mode == demo ]]; then
+            printf '  %s╭─[ ◉ ]─╮%s  %sREMNA NODE SETUP%s\n' \
+                "${UI_ACCENT:-${UI_BOLD:-}}" "${UI_RESET:-}" "${UI_BOLD:-}" "${UI_RESET:-}"
+        fi
+    elif [[ $mode == demo ]]; then
+        printf '  [o]  REMNA NODE SETUP\n'
+    fi
+}
+
+ui_splash_intro() {
+    local mode=${1:-default} status=0 rows=24 cols=80 measured_rows measured_columns
+    local -a args=()
+    if [[ $mode != demo && ${UI_INTRO_SHOWN:-no} == yes ]]; then
+        return 0
+    fi
+    if _ui_splash_env_blocked; then
+        UI_INTRO_SHOWN=yes
+        return 0
+    fi
+    if [[ $mode == demo ]]; then
+        args+=(--demo)
+    fi
+    if [[ -n ${UI_VERSION:-} ]]; then
+        args+=(--version "$UI_VERSION")
+    fi
+    if read -r measured_rows measured_columns < <(stty size 2>/dev/null); then
+        if [[ $measured_rows =~ ^[1-9][0-9]*$ ]]; then rows=$measured_rows; fi
+        if [[ $measured_columns =~ ^[1-9][0-9]*$ ]]; then cols=$measured_columns; fi
+    fi
+    if (( cols < 50 || rows < 18 )); then
+        UI_INTRO_SHOWN=yes
+        if [[ $mode == demo ]]; then
+            _ui_splash_fallback demo
+        fi
+        return 0
+    fi
+    UI_INTRO_SHOWN=yes
+    if command -v python3 >/dev/null 2>&1 && [[ -r ${PROJECT_DIR:-}/lib/splash.py ]]; then
+        if (( ${#args[@]} > 0 )); then
+            python3 "$PROJECT_DIR/lib/splash.py" "${args[@]}" || status=$?
+        else
+            python3 "$PROJECT_DIR/lib/splash.py" || status=$?
+        fi
+        if (( status >= 128 )); then
+            return "$status"
+        fi
+        if (( status == 0 )); then
+            return 0
+        fi
+    fi
+    _ui_splash_fallback "$mode"
+}
+
 ui_screen() {
     local title=${1-} parent=${2-}
     ui_layout
@@ -416,6 +500,7 @@ MENU_ACTIONS=(
 )
 
 ui_restart_menu() {
+    export REMNA_NO_INTRO=1
     if [[ -n ${SSH_PANEL_PROBE_HOST:-} ]]; then
         if "$RELEASE_COMMAND" --supports-panel-probe >/dev/null 2>&1; then
             exec "$RELEASE_COMMAND" __ssh-menu "$SSH_MENU_TICKET" - "$SSH_PANEL_PROBE_HOST"
